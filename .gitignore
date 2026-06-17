@@ -1,0 +1,13 @@
+.DS_Store
+.env
+.env.*
+.npm-cache/
+.npmrc
+node_modules/
+dist/
+edge/static-assets.generated.mjs
+qa-artifacts/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
