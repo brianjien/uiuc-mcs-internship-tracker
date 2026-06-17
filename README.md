@@ -11,6 +11,7 @@ Modern green SaaS dashboard for a UIUC MCS student tracking 2026 fall internship
 - Goal setting and pipeline progress tracking.
 - Mobile-responsive layout.
 - Wasmer Edge deployment config.
+- Wasmer database capability configured for the `fr-pari1` region.
 
 ## Run Locally
 
@@ -38,3 +39,5 @@ npm run wasmer:deploy
 ```
 
 If your Wasmer namespace is not `brianjien`, update `wasmer.toml` and `app.yaml`.
+
+Database credentials should be configured as Wasmer secrets or provided by the Wasmer database capability. Do not commit real `DB_PASSWORD` values.

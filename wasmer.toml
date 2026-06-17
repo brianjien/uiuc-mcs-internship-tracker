@@ -1,6 +1,6 @@
 [package]
 name = "brianjien/uiuc-mcs-internship-tracker"
-version = "0.1.0"
+version = "0.1.1"
 description = "Full-stack UIUC MCS internship and new grad tracker for Wasmer Edge"
 entrypoint = "script"
 

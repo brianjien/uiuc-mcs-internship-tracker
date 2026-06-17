@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .env.*
+!.env.example
 .npm-cache/
 .npmrc
 node_modules/
