@@ -216,6 +216,36 @@ export async function createUserAccount({ email, password, profile }) {
   return { user: publicUser(rows[0]), token: await createSession(id), workspace: emptyWorkspace };
 }
 
+export async function loginGoogleUser({ email, name, picture }) {
+  await ensureSchema();
+
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const [existingRows] = await getPool().execute("SELECT * FROM users WHERE email = ? LIMIT 1", [normalizedEmail]);
+  let user = existingRows[0];
+
+  if (!user) {
+    const id = randomUUID();
+    const nextProfile = {
+      name: name || "Candidate",
+      program: "Career Profile",
+      graduation: "2026-2027 cycle",
+      visa: "Internship + New Grad",
+      avatar: picture || "/assets/profile-presets/avatar-portrait.png",
+    };
+    await getPool().execute("INSERT INTO users (id, email, password_hash, profile_json) VALUES (?, ?, ?, ?)", [
+      id,
+      normalizedEmail,
+      `google:${randomBytes(24).toString("hex")}`,
+      serializeJson(nextProfile),
+    ]);
+    await saveWorkspace(id, emptyWorkspace);
+    const [createdRows] = await getPool().execute("SELECT * FROM users WHERE id = ? LIMIT 1", [id]);
+    user = createdRows[0];
+  }
+
+  return { user: publicUser(user), token: await createSession(user.id), workspace: await getWorkspace(user.id) };
+}
+
 export async function loginUser({ email, password }) {
   await ensureSchema();
 

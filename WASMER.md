@@ -57,6 +57,17 @@ Keep real database values out of GitHub. For manual secret setup, copy `.env.exa
 wasmer app secrets create --from-file=.env.local
 ```
 
+## Google Sign-In
+
+The app uses Google Identity Services in the browser and verifies the returned ID token on the backend with Google Auth Library. The provided OAuth client ID is configured in code as a public fallback. If you rotate it, set both:
+
+```bash
+GOOGLE_CLIENT_ID
+VITE_GOOGLE_CLIENT_ID
+```
+
+In Google Cloud Console, add the local and deployed app URLs to the OAuth client's Authorized JavaScript origins.
+
 Then deploy:
 
 ```bash

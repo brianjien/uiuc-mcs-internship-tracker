@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FiArrowUpRight as ArrowUpRight,
   FiBarChart2 as BarChart3,
@@ -63,6 +63,8 @@ import { FaAmazon, FaMicrosoft } from "react-icons/fa";
 
 const STORAGE_KEY = "career-tracker-workspace-v1";
 const AUTH_TOKEN_KEY = "career-tracker-auth-token-v1";
+const GOOGLE_CLIENT_ID =
+  import.meta.env.VITE_GOOGLE_CLIENT_ID || "48292852686-95nqueviim5bflqo4upq3bta29bkamej.apps.googleusercontent.com";
 
 const stages = [
   {
@@ -904,7 +906,79 @@ function ProfileImagePicker({ value, onChange, compact = false }) {
   );
 }
 
-function AuthScreen({ onLogin, onRegister }) {
+function loadGoogleIdentityScript() {
+  if (window.google?.accounts?.id) return Promise.resolve();
+  const existing = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
+  if (existing) {
+    return new Promise((resolve, reject) => {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", reject, { once: true });
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.onload = resolve;
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+
+function GoogleSignInButton({ onCredential, disabled = false }) {
+  const buttonRef = useRef(null);
+  const onCredentialRef = useRef(onCredential);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    onCredentialRef.current = onCredential;
+  }, [onCredential]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function renderGoogleButton() {
+      try {
+        await loadGoogleIdentityScript();
+        if (cancelled || !buttonRef.current) return;
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: (response) => {
+            if (response?.credential) onCredentialRef.current(response.credential);
+          },
+        });
+        buttonRef.current.innerHTML = "";
+        window.google.accounts.id.renderButton(buttonRef.current, {
+          theme: "outline",
+          size: "large",
+          type: "standard",
+          shape: "rectangular",
+          text: "continue_with",
+          width: Math.min(buttonRef.current.clientWidth || 360, 420),
+        });
+        setReady(true);
+      } catch {
+        setReady(false);
+      }
+    }
+
+    renderGoogleButton();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <div className={classNames("google-auth-slot", disabled && "is-disabled", !ready && "is-loading")}>
+      <div ref={buttonRef} />
+      {!ready && <span>Loading Google sign-in</span>}
+    </div>
+  );
+}
+
+function AuthScreen({ onLogin, onRegister, onGoogleLogin }) {
   const [mode, setMode] = useState("register");
   const [draft, setDraft] = useState({
     name: "",
@@ -935,6 +1009,14 @@ function AuthScreen({ onLogin, onRegister }) {
 
     setLoading(true);
     const result = isRegister ? await onRegister(draft) : await onLogin(draft);
+    if (result?.error) setError(result.error);
+    setLoading(false);
+  }
+
+  async function submitGoogleCredential(credential) {
+    setError("");
+    setLoading(true);
+    const result = await onGoogleLogin(credential);
     if (result?.error) setError(result.error);
     setLoading(false);
   }
@@ -978,6 +1060,10 @@ function AuthScreen({ onLogin, onRegister }) {
           <button className="primary-button" type="submit" disabled={loading}>
             {loading ? "Connecting" : isRegister ? "Create Account" : "Log In"}
           </button>
+          <div className="auth-divider">
+            <span>or</span>
+          </div>
+          <GoogleSignInButton onCredential={submitGoogleCredential} disabled={loading} />
           <button
             className="text-button auth-switch"
             type="button"
@@ -1885,6 +1971,25 @@ export function App() {
     }
   }
 
+  async function handleGoogleLogin(credential) {
+    try {
+      const result = await apiRequest("/api/auth/google", {
+        method: "POST",
+        body: { credential },
+        token: "",
+      });
+      saveAuthToken(result.token);
+      setAuthToken(result.token);
+      setCurrentUser(result.user);
+      applyWorkspace(result.workspace);
+      setWorkspaceReady(true);
+      setToast("Logged in with Google");
+      return result;
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "Google sign-in failed." };
+    }
+  }
+
   async function updateProfile(nextProfile) {
     const updatedProfile = {
       ...defaultProfile(),
@@ -2025,7 +2130,7 @@ export function App() {
   }
 
   if (!currentUser) {
-    return <AuthScreen onLogin={handleLogin} onRegister={handleRegister} />;
+    return <AuthScreen onLogin={handleLogin} onRegister={handleRegister} onGoogleLogin={handleGoogleLogin} />;
   }
 
   return (

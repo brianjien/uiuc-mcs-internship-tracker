@@ -5,7 +5,7 @@ Modern green SaaS dashboard for tracking 2026 fall internships, 2027 roles, and 
 ## Features
 
 - Full React dashboard with pipeline, tasks, companies, contacts, analytics, resources, and settings.
-- Database-backed sign up / login with profile image presets.
+- Database-backed email/password and Google sign-in with profile image presets.
 - Live job feed from public sources through `/api/jobs`.
 - Filters for 2026 Fall, 2027, New Grad, and remote mode.
 - Goal setting and pipeline progress tracking.

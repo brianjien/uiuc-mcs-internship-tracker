@@ -4,14 +4,19 @@ import {
   findUserByToken,
   getWorkspace,
   hasDatabaseConfig,
+  loginGoogleUser,
   loginUser,
   pingDatabase,
   saveWorkspace,
   updateUserProfile,
 } from "./db.mjs";
 import { getLiveJobs } from "./jobFeeds.mjs";
+import { OAuth2Client } from "google-auth-library";
 
 const maxBodyBytes = 1_000_000;
+const defaultGoogleClientId = "48292852686-95nqueviim5bflqo4upq3bta29bkamej.apps.googleusercontent.com";
+const googleClientId = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || defaultGoogleClientId;
+const googleClient = new OAuth2Client(googleClientId);
 
 function sendJson(response, status, payload) {
   response.writeHead(status, {
@@ -76,6 +81,22 @@ function validateAuthDraft(draft, isRegister) {
   return "";
 }
 
+async function verifyGoogleCredential(credential) {
+  const ticket = await googleClient.verifyIdToken({
+    idToken: credential,
+    audience: googleClientId,
+  });
+  const payload = ticket.getPayload();
+  if (!payload?.email || payload.email_verified !== true) {
+    throw new Error("Google account email could not be verified.");
+  }
+  return {
+    email: payload.email,
+    name: payload.name || payload.email.split("@")[0],
+    picture: payload.picture || "",
+  };
+}
+
 export async function handleApiRequest(request, response) {
   const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
   if (!url.pathname.startsWith("/api/")) return false;
@@ -129,6 +150,25 @@ export async function handleApiRequest(request, response) {
 
       const result = await loginUser(draft);
       sendJson(response, result.error ? 401 : 200, result);
+      return true;
+    }
+
+    if (url.pathname === "/api/auth/google" && request.method === "POST") {
+      const body = await readJson(request);
+      if (!body.credential) {
+        sendJson(response, 400, { error: "Missing Google credential." });
+        return true;
+      }
+
+      let googleProfile;
+      try {
+        googleProfile = await verifyGoogleCredential(String(body.credential));
+      } catch {
+        sendJson(response, 401, { error: "Google credential could not be verified." });
+        return true;
+      }
+      const result = await loginGoogleUser(googleProfile);
+      sendJson(response, 200, result);
       return true;
     }
 
