@@ -62,8 +62,7 @@ import {
 import { FaAmazon, FaMicrosoft } from "react-icons/fa";
 
 const STORAGE_KEY = "uiuc-mcs-internship-tracker-live-v2";
-const ACCOUNTS_KEY = "uiuc-mcs-internship-accounts-v1";
-const SESSION_KEY = "uiuc-mcs-internship-session-v1";
+const AUTH_TOKEN_KEY = "uiuc-mcs-internship-auth-token-v1";
 
 const stages = [
   {
@@ -174,66 +173,63 @@ function getInitials(name = "") {
   return parts.slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
-function readAccounts() {
+function readAuthToken() {
   try {
-    const stored = window.localStorage.getItem(ACCOUNTS_KEY);
-    const parsed = stored ? JSON.parse(stored) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    return window.localStorage.getItem(AUTH_TOKEN_KEY) || "";
   } catch {
-    return [];
+    return "";
   }
 }
 
-function saveAccounts(accounts) {
-  window.localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
+function saveAuthToken(token) {
+  window.localStorage.setItem(AUTH_TOKEN_KEY, token);
 }
 
-function passwordKey(email, password) {
-  const input = `${email.trim().toLowerCase()}::${password}`;
-  let hash = 2166136261;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16);
+function clearAuthToken() {
+  window.localStorage.removeItem(AUTH_TOKEN_KEY);
 }
 
-function readSessionUser() {
-  try {
-    const email = window.localStorage.getItem(SESSION_KEY);
-    if (!email) return null;
-    return readAccounts().find((account) => account.email === email) || null;
-  } catch {
-    return null;
+async function apiRequest(path, { method = "GET", body, token = readAuthToken() } = {}) {
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const response = await fetch(path, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json") ? await response.json() : {};
+
+  if (!response.ok) {
+    throw new Error(payload.error || `Request failed with ${response.status}`);
   }
+  return payload;
 }
 
-function createAccount({ name, email, password, avatar }) {
-  const normalizedEmail = email.trim().toLowerCase();
-  const accounts = readAccounts();
-  if (accounts.some((account) => account.email === normalizedEmail)) {
-    return { error: "This email is already registered." };
-  }
-  const account = {
-    id: `account-${Date.now()}`,
-    email: normalizedEmail,
-    password: passwordKey(normalizedEmail, password),
-    profile: defaultProfile({ name: name.trim() || "Brian Jien", avatar: avatar || profilePresets[0].src }),
-    createdAt: new Date().toISOString(),
+function serializeWorkspace({ jobs, tasks, contacts, documents, goal }) {
+  return {
+    jobs,
+    tasks: tasks.map(({ icon, ...task }) => task),
+    contacts,
+    documents,
+    goal,
   };
-  saveAccounts([account, ...accounts]);
-  window.localStorage.setItem(SESSION_KEY, account.email);
-  return { account };
 }
 
-function verifyAccount({ email, password }) {
-  const normalizedEmail = email.trim().toLowerCase();
-  const account = readAccounts().find((item) => item.email === normalizedEmail);
-  if (!account || account.password !== passwordKey(normalizedEmail, password)) {
-    return { error: "Email or password is incorrect." };
-  }
-  window.localStorage.setItem(SESSION_KEY, account.email);
-  return { account };
+function normalizeWorkspace(workspace = emptyStoredData) {
+  return {
+    jobs: Array.isArray(workspace.jobs) ? workspace.jobs : [],
+    tasks: Array.isArray(workspace.tasks) ? workspace.tasks.map((task) => ({ ...task, icon: CheckSquare2 })) : [],
+    contacts: Array.isArray(workspace.contacts) ? workspace.contacts : [],
+    documents: Array.isArray(workspace.documents) ? workspace.documents : [],
+    goal: workspace.goal && typeof workspace.goal === "object" ? workspace.goal : blankGoal,
+  };
+}
+
+function cacheWorkspace(workspace) {
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
 }
 
 function readStoredData() {
@@ -709,7 +705,7 @@ function DetailPanel({ job, onClose, onStageChange, onUpdateNotes, onCompleteNex
         <div className="notes-editor">
           <label htmlFor="job-notes">Notes for {job.company}</label>
           <textarea id="job-notes" value={job.notes} onChange={(event) => onUpdateNotes(job.id, event.target.value)} />
-          <p>Saved locally in this browser.</p>
+          <p>Synced to your database workspace.</p>
         </div>
       )}
 
@@ -909,7 +905,7 @@ function ProfileImagePicker({ value, onChange, compact = false }) {
 }
 
 function AuthScreen({ onLogin, onRegister }) {
-  const [mode, setMode] = useState(readAccounts().length > 0 ? "login" : "register");
+  const [mode, setMode] = useState("register");
   const [draft, setDraft] = useState({
     name: "Brian Jien",
     email: "",
@@ -917,6 +913,7 @@ function AuthScreen({ onLogin, onRegister }) {
     avatar: profilePresets[0].src,
   });
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const isRegister = mode === "register";
 
@@ -925,19 +922,21 @@ function AuthScreen({ onLogin, onRegister }) {
     setError("");
   }
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
     if (!draft.email.trim() || !draft.password) {
       setError("Email and password are required.");
       return;
     }
-    if (isRegister && draft.password.length < 4) {
-      setError("Use at least 4 characters for this local prototype.");
+    if (isRegister && draft.password.length < 8) {
+      setError("Use at least 8 characters.");
       return;
     }
 
-    const result = isRegister ? onRegister(draft) : onLogin(draft);
+    setLoading(true);
+    const result = isRegister ? await onRegister(draft) : await onLogin(draft);
     if (result?.error) setError(result.error);
+    setLoading(false);
   }
 
   return (
@@ -971,13 +970,13 @@ function AuthScreen({ onLogin, onRegister }) {
               type="password"
               value={draft.password}
               onChange={(event) => update("password", event.target.value)}
-              placeholder="Local password"
+              placeholder="Database account password"
             />
           </label>
           {isRegister && <ProfileImagePicker value={draft.avatar} onChange={(avatar) => update("avatar", avatar)} compact />}
           {error && <span className="auth-error">{error}</span>}
-          <button className="primary-button" type="submit">
-            {isRegister ? "Create Account" : "Log In"}
+          <button className="primary-button" type="submit" disabled={loading}>
+            {loading ? "Connecting" : isRegister ? "Create Account" : "Log In"}
           </button>
           <button
             className="text-button auth-switch"
@@ -1576,9 +1575,9 @@ function SettingsView({
           </div>
         </article>
         <article className="rail-card">
-          <h3>Local Data</h3>
-          <p>Only imported live roles and data you add are saved in this browser.</p>
-          <button className="secondary-button" type="button" onClick={onReset}>Clear Local Data</button>
+          <h3>Database Workspace</h3>
+          <p>Imported live roles and data you add are saved to your account database.</p>
+          <button className="secondary-button" type="button" onClick={onReset}>Clear Workspace</button>
         </article>
       </div>
     </section>
@@ -1586,7 +1585,10 @@ function SettingsView({
 }
 
 export function App() {
-  const [currentUser, setCurrentUser] = useState(readSessionUser);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authToken, setAuthToken] = useState(readAuthToken);
+  const [authReady, setAuthReady] = useState(false);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
   const [activeView, setActiveView] = useState("Dashboard");
   const [jobs, setJobs] = useState(loadJobs);
   const [tasks, setTasks] = useState(loadTasks);
@@ -1617,9 +1619,66 @@ export function App() {
     [],
   );
 
+  function applyWorkspace(workspace) {
+    const next = normalizeWorkspace(workspace);
+    setJobs(next.jobs);
+    setTasks(next.tasks);
+    setContacts(next.contacts);
+    setDocuments(next.documents);
+    setGoal(next.goal || blankGoal);
+    cacheWorkspace(serializeWorkspace(next));
+  }
+
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ jobs, tasks, contacts, documents, goal }));
-  }, [jobs, tasks, contacts, documents, goal]);
+    let cancelled = false;
+
+    async function restoreSession() {
+      if (!authToken) {
+        setAuthReady(true);
+        return;
+      }
+
+      try {
+        const data = await apiRequest("/api/me", { token: authToken });
+        if (cancelled) return;
+        setCurrentUser(data.user);
+        applyWorkspace(data.workspace);
+        setWorkspaceReady(true);
+      } catch {
+        if (cancelled) return;
+        clearAuthToken();
+        setAuthToken("");
+        setWorkspaceReady(false);
+      } finally {
+        if (!cancelled) setAuthReady(true);
+      }
+    }
+
+    restoreSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const snapshot = serializeWorkspace({ jobs, tasks, contacts, documents, goal });
+    cacheWorkspace(snapshot);
+
+    if (!currentUser || !authToken || !workspaceReady) return undefined;
+    const timer = window.setTimeout(async () => {
+      try {
+        await apiRequest("/api/workspace", {
+          method: "PUT",
+          token: authToken,
+          body: { workspace: snapshot },
+        });
+      } catch (error) {
+        setToast(error instanceof Error ? error.message : "Workspace could not save to database");
+      }
+    }, 650);
+
+    return () => window.clearTimeout(timer);
+  }, [jobs, tasks, contacts, documents, goal, currentUser, authToken, workspaceReady]);
 
   useEffect(() => {
     if (!selectedId && jobs.length > 0) setSelectedId(jobs[0].id);
@@ -1780,44 +1839,79 @@ export function App() {
     setToast(nextGoal.target ? "Goal saved" : "Goal cleared");
   }
 
-  function handleRegister(draft) {
-    const result = createAccount(draft);
-    if (result.account) {
-      setCurrentUser(result.account);
-      setToast("Account created");
-    }
-    return result;
-  }
-
-  function handleLogin(draft) {
-    const result = verifyAccount(draft);
-    if (result.account) {
-      setCurrentUser(result.account);
-      setToast("Logged in");
-    }
-    return result;
-  }
-
-  function updateProfile(nextProfile) {
-    setCurrentUser((current) => {
-      if (!current) return current;
-      const updated = {
-        ...current,
-        profile: {
-          ...defaultProfile(),
-          ...current.profile,
-          ...nextProfile,
+  async function handleRegister(draft) {
+    try {
+      const result = await apiRequest("/api/auth/register", {
+        method: "POST",
+        body: {
+          email: draft.email,
+          password: draft.password,
+          name: draft.name,
+          avatar: draft.avatar,
         },
-      };
-      saveAccounts(readAccounts().map((account) => (account.email === updated.email ? updated : account)));
-      return updated;
-    });
+        token: "",
+      });
+      saveAuthToken(result.token);
+      setAuthToken(result.token);
+      setCurrentUser(result.user);
+      applyWorkspace(result.workspace);
+      setWorkspaceReady(true);
+      setToast("Account created");
+      return result;
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "Could not create account." };
+    }
+  }
+
+  async function handleLogin(draft) {
+    try {
+      const result = await apiRequest("/api/auth/login", {
+        method: "POST",
+        body: {
+          email: draft.email,
+          password: draft.password,
+        },
+        token: "",
+      });
+      saveAuthToken(result.token);
+      setAuthToken(result.token);
+      setCurrentUser(result.user);
+      applyWorkspace(result.workspace);
+      setWorkspaceReady(true);
+      setToast("Logged in");
+      return result;
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "Could not log in." };
+    }
+  }
+
+  async function updateProfile(nextProfile) {
+    const updatedProfile = {
+      ...defaultProfile(),
+      ...currentUser?.profile,
+      ...nextProfile,
+    };
+    setCurrentUser((current) => (current ? { ...current, profile: updatedProfile } : current));
     setToast("Profile saved");
+
+    try {
+      const result = await apiRequest("/api/profile", {
+        method: "PATCH",
+        token: authToken,
+        body: { profile: updatedProfile },
+      });
+      setCurrentUser(result.user);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Profile could not save to database");
+    }
   }
 
   function logout() {
-    window.localStorage.removeItem(SESSION_KEY);
+    apiRequest("/api/auth/logout", { method: "POST", token: authToken }).catch(() => {});
+    clearAuthToken();
+    setAuthToken("");
     setCurrentUser(null);
+    setWorkspaceReady(false);
   }
 
   function clearLocalData() {
@@ -1829,7 +1923,7 @@ export function App() {
     setSelectedId(null);
     setSearch("");
     setSeason("All");
-    setToast("Local data cleared");
+    setToast("Workspace cleared");
   }
 
   function loadMoreLiveJobs() {
@@ -1908,6 +2002,26 @@ export function App() {
       );
     }
     return null;
+  }
+
+  if (!authReady) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card">
+          <div className="auth-visual">
+            <img src={profilePresets[0].src} alt="" />
+            <div>
+              <strong>UIUC MCS</strong>
+              <span>Internship Tracker</span>
+            </div>
+          </div>
+          <div className="auth-form">
+            <p>Database session</p>
+            <h1>Connecting your tracker</h1>
+          </div>
+        </section>
+      </main>
+    );
   }
 
   if (!currentUser) {
@@ -1989,7 +2103,7 @@ export function App() {
           </label>
 
           <div className="top-actions">
-            <IconButton label="Clear local data" onClick={clearLocalData}>
+            <IconButton label="Clear workspace data" onClick={clearLocalData}>
               <RefreshCcw size={17} />
             </IconButton>
             <IconButton label="Notifications">

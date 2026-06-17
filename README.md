@@ -10,7 +10,7 @@ Modern green SaaS dashboard for a UIUC MCS student tracking 2026 fall internship
 - Filters for 2026 Fall, 2027, New Grad, and remote mode.
 - Goal setting and pipeline progress tracking.
 - Mobile-responsive layout.
-- Wasmer Edge deployment config.
+- Wasmer Edge deployment config using a Node-compatible backend runtime.
 - Wasmer database capability configured for the `fr-pari1` region.
 
 ## Run Locally

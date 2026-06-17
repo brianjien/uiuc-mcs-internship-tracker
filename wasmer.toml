@@ -1,20 +1,21 @@
 [package]
 name = "brianjien/uiuc-mcs-internship-tracker"
-version = "0.1.1"
+version = "0.2.0"
 description = "Full-stack UIUC MCS internship and new grad tracker for Wasmer Edge"
 entrypoint = "script"
 
 [dependencies]
-"wasmer/winterjs" = "^1"
+"wasmer/edgejs" = "0.0.1"
 
 [fs]
-"/edge" = "./edge"
-"/server" = "./server"
+"/app/dist" = "./dist"
+"/app/server-dist" = "./server-dist"
 
 [[command]]
 name = "script"
-module = "wasmer/winterjs:wasmer-winter"
+module = "wasmer/edgejs:edgejs"
 runner = "https://webc.org/runner/wasi"
 
 [command.annotations.wasi]
-main-args = ["/edge/index.js"]
+main-args = ["/app/server-dist/http.mjs"]
+env = ["NODE_ENV=production", "PORT=8080"]

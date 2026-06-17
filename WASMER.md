@@ -2,11 +2,12 @@
 
 This project is configured as a full-stack Wasmer Edge app:
 
-- `edge/index.js` serves the built React app and handles `/api/jobs`.
-- `server/jobFeeds.mjs` fetches live roles from public job sources.
-- `scripts/build-edge-assets.mjs` packages the Vite `dist` output for the Wasmer JS worker.
+- `server/http.mjs` serves the built React app and handles `/api/*`.
+- `server/api.mjs` handles auth, profile, workspace persistence, health checks, and live jobs.
+- `server/db.mjs` stores accounts, sessions, and workspace data in MySQL.
+- `scripts/build-server.mjs` bundles the Node backend for Wasmer Edge.
 
-The worker entrypoint is configured in `wasmer.toml` via `main-args`. Do not also pass `/edge/index.js` through `app.yaml` `cli_args`, because that forwards an extra argument to the app process and Wasmer will exit with `unexpected argument '/edge/index.js'`.
+The backend runs on Wasmer's Node-compatible Edge.js runtime because the MySQL driver needs Node networking APIs. The entrypoint is configured in `wasmer.toml` via `main-args`.
 
 ## Local Full-Stack Test
 
@@ -23,7 +24,7 @@ Open `http://127.0.0.1:8787`.
 npm run wasmer:local
 ```
 
-Wasmer serves the worker locally at `http://127.0.0.1:8080`.
+Wasmer serves the full-stack app locally at `http://127.0.0.1:8080`.
 
 ## Deploy
 
@@ -47,6 +48,8 @@ DB_NAME
 DB_USERNAME
 DB_PASSWORD
 ```
+
+The backend also accepts `DB_USER` as an alias for `DB_USERNAME`.
 
 Keep real database values out of GitHub. For manual secret setup, copy `.env.example` to a local ignored file, fill in the values, and upload it through the Wasmer dashboard Secrets tab or the CLI:
 
