@@ -66,7 +66,30 @@ GOOGLE_CLIENT_ID
 VITE_GOOGLE_CLIENT_ID
 ```
 
-In Google Cloud Console, add the local and deployed app URLs to the OAuth client's Authorized JavaScript origins.
+The Google button uses redirect UX mode so it does not get stuck in a popup transform page. In Google Cloud Console, add the local and deployed app URLs to the OAuth client's Authorized JavaScript origins, and add the callback endpoint to Authorized redirect URIs.
+
+Local origins:
+
+```bash
+http://127.0.0.1:8794
+http://localhost:8794
+```
+
+Local redirect URIs:
+
+```bash
+http://127.0.0.1:8794/api/auth/google/redirect
+http://localhost:8794/api/auth/google/redirect
+```
+
+Deployed origin and redirect URI:
+
+```bash
+https://career-tracker-dashboard.wasmer.app
+https://career-tracker-dashboard.wasmer.app/api/auth/google/redirect
+```
+
+If Wasmer prints a different production URL after deploy, add that exact origin and the same `/api/auth/google/redirect` callback path.
 
 Then deploy:
 

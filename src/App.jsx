@@ -199,6 +199,7 @@ async function apiRequest(path, { method = "GET", body, token = readAuthToken() 
   const response = await fetch(path, {
     method,
     headers,
+    credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const contentType = response.headers.get("content-type") || "";
@@ -927,14 +928,9 @@ function loadGoogleIdentityScript() {
   });
 }
 
-function GoogleSignInButton({ onCredential, disabled = false }) {
+function GoogleSignInButton({ disabled = false }) {
   const buttonRef = useRef(null);
-  const onCredentialRef = useRef(onCredential);
   const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    onCredentialRef.current = onCredential;
-  }, [onCredential]);
 
   useEffect(() => {
     let cancelled = false;
@@ -945,9 +941,8 @@ function GoogleSignInButton({ onCredential, disabled = false }) {
         if (cancelled || !buttonRef.current) return;
         window.google.accounts.id.initialize({
           client_id: GOOGLE_CLIENT_ID,
-          callback: (response) => {
-            if (response?.credential) onCredentialRef.current(response.credential);
-          },
+          ux_mode: "redirect",
+          login_uri: `${window.location.origin}/api/auth/google/redirect`,
         });
         buttonRef.current.innerHTML = "";
         window.google.accounts.id.renderButton(buttonRef.current, {
@@ -978,7 +973,7 @@ function GoogleSignInButton({ onCredential, disabled = false }) {
   );
 }
 
-function AuthScreen({ onLogin, onRegister, onGoogleLogin }) {
+function AuthScreen({ onLogin, onRegister }) {
   const [mode, setMode] = useState("register");
   const [draft, setDraft] = useState({
     name: "",
@@ -1009,14 +1004,6 @@ function AuthScreen({ onLogin, onRegister, onGoogleLogin }) {
 
     setLoading(true);
     const result = isRegister ? await onRegister(draft) : await onLogin(draft);
-    if (result?.error) setError(result.error);
-    setLoading(false);
-  }
-
-  async function submitGoogleCredential(credential) {
-    setError("");
-    setLoading(true);
-    const result = await onGoogleLogin(credential);
     if (result?.error) setError(result.error);
     setLoading(false);
   }
@@ -1063,7 +1050,7 @@ function AuthScreen({ onLogin, onRegister, onGoogleLogin }) {
           <div className="auth-divider">
             <span>or</span>
           </div>
-          <GoogleSignInButton onCredential={submitGoogleCredential} disabled={loading} />
+          <GoogleSignInButton disabled={loading} />
           <button
             className="text-button auth-switch"
             type="button"
@@ -1719,11 +1706,6 @@ export function App() {
     let cancelled = false;
 
     async function restoreSession() {
-      if (!authToken) {
-        setAuthReady(true);
-        return;
-      }
-
       try {
         const data = await apiRequest("/api/me", { token: authToken });
         if (cancelled) return;
@@ -1750,7 +1732,7 @@ export function App() {
     const snapshot = serializeWorkspace({ jobs, tasks, contacts, documents, goal });
     cacheWorkspace(snapshot);
 
-    if (!currentUser || !authToken || !workspaceReady) return undefined;
+    if (!currentUser || !workspaceReady) return undefined;
     const timer = window.setTimeout(async () => {
       try {
         await apiRequest("/api/workspace", {
@@ -1971,25 +1953,6 @@ export function App() {
     }
   }
 
-  async function handleGoogleLogin(credential) {
-    try {
-      const result = await apiRequest("/api/auth/google", {
-        method: "POST",
-        body: { credential },
-        token: "",
-      });
-      saveAuthToken(result.token);
-      setAuthToken(result.token);
-      setCurrentUser(result.user);
-      applyWorkspace(result.workspace);
-      setWorkspaceReady(true);
-      setToast("Logged in with Google");
-      return result;
-    } catch (error) {
-      return { error: error instanceof Error ? error.message : "Google sign-in failed." };
-    }
-  }
-
   async function updateProfile(nextProfile) {
     const updatedProfile = {
       ...defaultProfile(),
@@ -2130,7 +2093,7 @@ export function App() {
   }
 
   if (!currentUser) {
-    return <AuthScreen onLogin={handleLogin} onRegister={handleRegister} onGoogleLogin={handleGoogleLogin} />;
+    return <AuthScreen onLogin={handleLogin} onRegister={handleRegister} />;
   }
 
   return (

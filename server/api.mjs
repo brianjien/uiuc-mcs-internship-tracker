@@ -18,12 +18,22 @@ const defaultGoogleClientId = "48292852686-95nqueviim5bflqo4upq3bta29bkamej.apps
 const googleClientId = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || defaultGoogleClientId;
 const googleClient = new OAuth2Client(googleClientId);
 
-function sendJson(response, status, payload) {
+function sendJson(response, status, payload, extraHeaders = {}) {
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    ...extraHeaders,
   });
   response.end(JSON.stringify(payload));
+}
+
+function redirect(response, location, extraHeaders = {}) {
+  response.writeHead(303, {
+    location,
+    "cache-control": "no-store",
+    ...extraHeaders,
+  });
+  response.end();
 }
 
 function sendNoContent(response) {
@@ -38,17 +48,52 @@ function sendNoContent(response) {
 function authToken(request) {
   const header = request.headers.authorization || "";
   if (header.startsWith("Bearer ")) return header.slice("Bearer ".length).trim();
-  return request.headers["x-session-token"] || "";
+  return request.headers["x-session-token"] || parseCookies(request).ct_session || "";
 }
 
-async function readJson(request) {
+function parseCookies(request) {
+  const cookieHeader = request.headers.cookie || "";
+  return Object.fromEntries(
+    cookieHeader
+      .split(";")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const delimiter = item.indexOf("=");
+        if (delimiter === -1) return [decodeURIComponent(item), ""];
+        return [decodeURIComponent(item.slice(0, delimiter)), decodeURIComponent(item.slice(delimiter + 1))];
+      }),
+  );
+}
+
+function sessionCookie(token) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  return `ct_session=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax${secure}`;
+}
+
+function clearSessionCookie() {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  return `ct_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${secure}`;
+}
+
+async function readBody(request) {
   let body = "";
   for await (const chunk of request) {
     body += chunk;
     if (body.length > maxBodyBytes) throw new Error("Request body is too large.");
   }
+  return body;
+}
+
+async function readJson(request) {
+  const body = await readBody(request);
   if (!body.trim()) return {};
   return JSON.parse(body);
+}
+
+async function readForm(request) {
+  const body = await readBody(request);
+  return Object.fromEntries(new URLSearchParams(body));
 }
 
 async function requireUser(request, response) {
@@ -136,7 +181,7 @@ export async function handleApiRequest(request, response) {
       }
 
       const result = await createUserAccount(draft);
-      sendJson(response, result.error ? 409 : 201, result);
+      sendJson(response, result.error ? 409 : 201, result, result.token ? { "set-cookie": sessionCookie(result.token) } : {});
       return true;
     }
 
@@ -149,7 +194,7 @@ export async function handleApiRequest(request, response) {
       }
 
       const result = await loginUser(draft);
-      sendJson(response, result.error ? 401 : 200, result);
+      sendJson(response, result.error ? 401 : 200, result, result.token ? { "set-cookie": sessionCookie(result.token) } : {});
       return true;
     }
 
@@ -168,13 +213,33 @@ export async function handleApiRequest(request, response) {
         return true;
       }
       const result = await loginGoogleUser(googleProfile);
-      sendJson(response, 200, result);
+      sendJson(response, 200, result, { "set-cookie": sessionCookie(result.token) });
+      return true;
+    }
+
+    if (url.pathname === "/api/auth/google/redirect" && request.method === "POST") {
+      const cookies = parseCookies(request);
+      const body = await readForm(request);
+      const bodyCsrf = body.g_csrf_token || "";
+      const cookieCsrf = cookies.g_csrf_token || "";
+      if ((bodyCsrf || cookieCsrf) && bodyCsrf !== cookieCsrf) {
+        redirect(response, "/?auth_error=google_csrf");
+        return true;
+      }
+
+      try {
+        const googleProfile = await verifyGoogleCredential(String(body.credential || ""));
+        const result = await loginGoogleUser(googleProfile);
+        redirect(response, "/", { "set-cookie": sessionCookie(result.token) });
+      } catch {
+        redirect(response, "/?auth_error=google");
+      }
       return true;
     }
 
     if (url.pathname === "/api/auth/logout" && request.method === "POST") {
       await deleteSession(authToken(request));
-      sendJson(response, 200, { ok: true });
+      sendJson(response, 200, { ok: true }, { "set-cookie": clearSessionCookie() });
       return true;
     }
 
