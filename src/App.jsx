@@ -19,6 +19,8 @@ import {
   FiClock as Clock3,
   FiColumns as Columns3,
   FiCopy as Copy,
+  FiDownload as Download,
+  FiEye as Eye,
   FiExternalLink as ExternalLink,
   FiFileText as FileText,
   FiFilter as Filter,
@@ -227,6 +229,45 @@ function isOpenableUrl(value = "") {
   return /^https?:\/\//i.test(String(value).trim());
 }
 
+function getEmbeddableDocumentUrl(value = "") {
+  const rawUrl = String(value || "").trim();
+  if (!isOpenableUrl(rawUrl)) return "";
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (host === "drive.google.com") {
+      const fileMatch = parsed.pathname.match(/\/file\/d\/([^/]+)/);
+      const id = fileMatch?.[1] || parsed.searchParams.get("id");
+      if (id) return `https://drive.google.com/file/d/${id}/preview`;
+    }
+    if (host === "docs.google.com") {
+      const docMatch = parsed.pathname.match(/^\/(document|spreadsheets|presentation)\/d\/([^/]+)/);
+      if (docMatch) return `https://docs.google.com/${docMatch[1]}/d/${docMatch[2]}/preview`;
+    }
+    return rawUrl;
+  } catch {
+    return rawUrl;
+  }
+}
+
+function getDocumentPreviewMode(document = {}) {
+  const fileType = String(document.fileType || "").toLowerCase();
+  const fileName = String(document.fileName || "").toLowerCase();
+  if (document.fileData) {
+    if (fileType.startsWith("image/")) return "image";
+    if (fileType === "application/pdf" || fileName.endsWith(".pdf")) return "frame";
+    if (fileType.startsWith("text/") || /\.(csv|json|md|txt)$/i.test(fileName)) return "frame";
+    return "unsupported-file";
+  }
+  if (isOpenableUrl(document.url)) return "link";
+  return "empty";
+}
+
+function getDocumentPreviewSource(document = {}) {
+  if (document.fileData) return document.fileData;
+  return getEmbeddableDocumentUrl(document.url);
+}
+
 function readAuthToken() {
   try {
     return window.localStorage.getItem(AUTH_TOKEN_KEY) || "";
@@ -422,6 +463,49 @@ function IconButton({ label, children, className = "", ...props }) {
     <button className={classNames("icon-button", className)} type="button" aria-label={label} {...props}>
       {children}
     </button>
+  );
+}
+
+function DocumentPreviewPanel({ document }) {
+  const mode = getDocumentPreviewMode(document);
+  const source = getDocumentPreviewSource(document);
+
+  if (mode === "image") {
+    return (
+      <div className="document-preview-canvas">
+        <img src={source} alt={`${document.name} preview`} />
+      </div>
+    );
+  }
+
+  if ((mode === "frame" || mode === "link") && source) {
+    return (
+      <>
+        <iframe
+          className="document-preview-frame"
+          src={source}
+          title={`${document.name} preview`}
+          referrerPolicy="no-referrer-when-downgrade"
+        />
+        {mode === "link" && (
+          <p className="document-preview-note">
+            Some sources block embedded previews. Use Open Source if this pane stays blank.
+          </p>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className="document-preview-empty">
+      <FileText size={32} aria-hidden="true" />
+      <strong>Preview not available</strong>
+      <span>
+        {document.fileName
+          ? "This file type cannot be rendered in the browser. Download it to view the full document."
+          : "Attach a PDF, image, text file, or add a document link to preview it here."}
+      </span>
+    </div>
   );
 }
 
@@ -1511,6 +1595,7 @@ function DocumentsView({
   const [statusFilter, setStatusFilter] = useState("All");
   const [typeFilter, setTypeFilter] = useState("All");
   const [fileNotice, setFileNotice] = useState("");
+  const [previewDocument, setPreviewDocument] = useState(null);
 
   const targetOptions = useMemo(() => {
     const seen = new Set(["General"]);
@@ -1543,6 +1628,15 @@ function DocumentsView({
     .filter(Boolean)
     .sort();
   const latestUpdate = sortedDocumentUpdates[sortedDocumentUpdates.length - 1];
+
+  useEffect(() => {
+    if (!previewDocument) return undefined;
+    function closeOnEscape(event) {
+      if (event.key === "Escape") setPreviewDocument(null);
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [previewDocument]);
 
   function update(field, value) {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -1628,6 +1722,14 @@ function DocumentsView({
     } catch {
       onToast("Link could not be copied");
     }
+  }
+
+  function openPreview(document) {
+    if (!document.fileData && !isOpenableUrl(document.url)) {
+      onToast("Add a file or link before previewing");
+      return;
+    }
+    setPreviewDocument(document);
   }
 
   return (
@@ -1754,6 +1856,7 @@ function DocumentsView({
           <div className="document-grid">
             {filteredDocuments.map((doc) => {
               const canOpenLink = isOpenableUrl(doc.url);
+              const canPreview = Boolean(doc.fileData || canOpenLink);
               return (
                 <article key={doc.id} className="document-card">
                   <div className="document-card-head">
@@ -1789,13 +1892,23 @@ function DocumentsView({
                   )}
                   {doc.notes && <p className="document-notes">{doc.notes}</p>}
                   <div className="document-card-actions">
+                    <button
+                      className="secondary-button document-preview-trigger"
+                      type="button"
+                      onClick={() => openPreview(doc)}
+                      disabled={!canPreview}
+                      aria-label={`Preview ${doc.name}`}
+                    >
+                      <Eye size={14} aria-hidden="true" />
+                      Preview
+                    </button>
                     {canOpenLink ? (
                       <a className="secondary-button" href={doc.url} target="_blank" rel="noreferrer">
                         Open <ArrowUpRight size={14} aria-hidden="true" />
                       </a>
                     ) : doc.fileData ? (
                       <a className="secondary-button" href={doc.fileData} download={doc.fileName || `${doc.name}.txt`}>
-                        Download <ArrowUpRight size={14} aria-hidden="true" />
+                        Download <Download size={14} aria-hidden="true" />
                       </a>
                     ) : (
                       <button className="secondary-button" type="button" disabled>
@@ -1821,6 +1934,50 @@ function DocumentsView({
           </div>
         </div>
       </div>
+
+      {previewDocument && (
+        <div
+          className="modal-backdrop document-preview-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${previewDocument.name} preview`}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setPreviewDocument(null);
+          }}
+        >
+          <div className="document-preview-modal">
+            <div className="document-preview-head">
+              <span className="document-icon" aria-hidden="true">
+                <FileText size={18} />
+              </span>
+              <span>
+                <strong>{previewDocument.name}</strong>
+                <small>
+                  {previewDocument.fileName || previewDocument.url || `${previewDocument.type} · ${previewDocument.target || "General"}`}
+                </small>
+              </span>
+              <div className="document-preview-actions">
+                {previewDocument.fileData && (
+                  <a className="secondary-button" href={previewDocument.fileData} download={previewDocument.fileName || `${previewDocument.name}.txt`}>
+                    <Download size={14} aria-hidden="true" />
+                    Download
+                  </a>
+                )}
+                {isOpenableUrl(previewDocument.url) && (
+                  <a className="secondary-button" href={previewDocument.url} target="_blank" rel="noreferrer">
+                    <ExternalLink size={14} aria-hidden="true" />
+                    Open Source
+                  </a>
+                )}
+                <button className="icon-button" type="button" onClick={() => setPreviewDocument(null)} aria-label="Close preview">
+                  <X size={18} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+            <DocumentPreviewPanel document={previewDocument} />
+          </div>
+        </div>
+      )}
     </section>
   );
 }
