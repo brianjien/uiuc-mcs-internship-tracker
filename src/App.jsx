@@ -824,11 +824,68 @@ function sankeyPath(x1, y1, x2, y2) {
   return `M ${x1} ${y1} C ${x1 + curve} ${y1}, ${x2 - curve} ${y2}, ${x2} ${y2}`;
 }
 
+function getSankeyLabelPosition(node) {
+  if (node.id === "tracked") return { x: 18, anchor: "start" };
+  if (node.x > 760) return { x: 18, anchor: "start" };
+  return { x: -18, anchor: "end" };
+}
+
 function JobSearchSankey({ jobs, svgRef }) {
   const { counts, nodes, nodeMap, links } = buildSankeyStats(jobs);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef(null);
   const maxFlow = Math.max(1, counts.total);
   const flowScale = Math.min(30, 150 / maxFlow);
   const activeCompanies = new Set(jobs.map((job) => job.company).filter(Boolean)).size;
+
+  function startPan(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      panX: pan.x,
+      panY: pan.y,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setDragging(true);
+  }
+
+  function movePan(event) {
+    if (!dragRef.current || dragRef.current.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    setPan({
+      x: dragRef.current.panX + event.clientX - dragRef.current.startX,
+      y: dragRef.current.panY + event.clientY - dragRef.current.startY,
+    });
+  }
+
+  function stopPan(event) {
+    if (!dragRef.current || dragRef.current.pointerId !== event.pointerId) return;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    dragRef.current = null;
+    setDragging(false);
+  }
+
+  function panWithKeyboard(event) {
+    const step = event.shiftKey ? 40 : 16;
+    const moves = {
+      ArrowLeft: { x: -step, y: 0 },
+      ArrowRight: { x: step, y: 0 },
+      ArrowUp: { x: 0, y: -step },
+      ArrowDown: { x: 0, y: step },
+    };
+    if (event.key === "Home") {
+      event.preventDefault();
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+    const move = moves[event.key];
+    if (!move) return;
+    event.preventDefault();
+    setPan((current) => ({ x: current.x + move.x, y: current.y + move.y }));
+  }
 
   if (counts.total === 0) {
     return (
@@ -856,7 +913,21 @@ function JobSearchSankey({ jobs, svgRef }) {
   }
 
   return (
-    <svg ref={svgRef} className="sankey-svg" viewBox="0 0 1120 520" role="img" aria-label="Job search Sankey diagram">
+    <svg
+      ref={svgRef}
+      className={classNames("sankey-svg", dragging && "is-dragging")}
+      viewBox="0 0 1120 520"
+      role="img"
+      aria-label="Job search Sankey diagram"
+      tabIndex="0"
+      onPointerDown={startPan}
+      onPointerMove={movePan}
+      onPointerUp={stopPan}
+      onPointerCancel={stopPan}
+      onDoubleClick={() => setPan({ x: 0, y: 0 })}
+      onKeyDown={panWithKeyboard}
+    >
+      <title>Drag to pan the Sankey diagram. Double-click or press Home to reset.</title>
       <rect width="1120" height="520" rx="8" fill="#ffffff" />
       <text x="560" y="58" textAnchor="middle" className="sankey-title">
         Job Search Sankey
@@ -865,32 +936,41 @@ function JobSearchSankey({ jobs, svgRef }) {
         {counts.total} tracked roles across {activeCompanies} companies
       </text>
 
-      <g fill="none" strokeLinecap="round">
-        {links.map((link) => {
-          const from = nodeMap[link.from];
-          const to = nodeMap[link.to];
+      <g className="sankey-pan-layer" transform={`translate(${pan.x} ${pan.y})`}>
+        <g fill="none" strokeLinecap="round">
+          {links.map((link) => {
+            const from = nodeMap[link.from];
+            const to = nodeMap[link.to];
+            return (
+              <path
+                key={`${link.from}-${link.to}`}
+                d={sankeyPath(from.x + 12, link.y1, to.x - 12, link.y2)}
+                className={classNames("sankey-flow", `is-${link.tone}`)}
+                strokeWidth={Math.max(5, link.value * flowScale)}
+              />
+            );
+          })}
+        </g>
+
+        {nodes.map((node) => {
+          const labelPosition = getSankeyLabelPosition(node);
           return (
-            <path
-              key={`${link.from}-${link.to}`}
-              d={sankeyPath(from.x + 12, link.y1, to.x - 12, link.y2)}
-              className={classNames("sankey-flow", `is-${link.tone}`)}
-              strokeWidth={Math.max(5, link.value * flowScale)}
-            />
+            <g
+              key={node.id}
+              className={classNames("sankey-node", `is-${node.tone}`, node.value === 0 && "is-empty")}
+              transform={`translate(${node.x}, ${node.y})`}
+            >
+              <rect x="-10" y="-38" width="20" height="76" rx="4" />
+              <text className="sankey-label-main" x={labelPosition.x} y="-4" textAnchor={labelPosition.anchor}>
+                {node.label}
+              </text>
+              <text className="sankey-label-value" x={labelPosition.x} y="15" textAnchor={labelPosition.anchor}>
+                {node.value}
+              </text>
+            </g>
           );
         })}
       </g>
-
-      {nodes.map((node) => (
-        <g key={node.id} className={classNames("sankey-node", `is-${node.tone}`, node.value === 0 && "is-empty")} transform={`translate(${node.x}, ${node.y})`}>
-          <rect x="-10" y="-38" width="20" height="76" rx="4" />
-          <text className="sankey-label-main" x={node.x > 760 ? 18 : -18} y="-4" textAnchor={node.x > 760 ? "start" : "end"}>
-            {node.label}
-          </text>
-          <text className="sankey-label-value" x={node.x > 760 ? 18 : -18} y="15" textAnchor={node.x > 760 ? "start" : "end"}>
-            {node.value}
-          </text>
-        </g>
-      ))}
     </svg>
   );
 }
