@@ -23,6 +23,10 @@
   --danger: #c2410c;
   --shadow: 0 20px 60px rgba(32, 45, 36, 0.08);
   --small-shadow: 0 8px 24px rgba(32, 45, 36, 0.08);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
 }
 
 * {
@@ -38,12 +42,33 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  min-height: 100svh;
   color: var(--ink);
   background:
     linear-gradient(180deg, rgba(236, 246, 239, 0.72), rgba(247, 249, 246, 0.92) 42%),
     var(--bg);
   -webkit-font-smoothing: antialiased;
   text-rendering: geometricPrecision;
+}
+
+@supports (min-height: 100dvh) {
+  body {
+    min-height: 100dvh;
+  }
+}
+
+body::after {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 35;
+  height: var(--safe-bottom);
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(247, 249, 246, 0), rgba(247, 249, 246, 0.24));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  content: "";
 }
 
 button,
@@ -77,16 +102,26 @@ a {
   display: grid;
   grid-template-columns: 132px minmax(0, 1fr);
   min-height: 100vh;
+  min-height: 100svh;
 }
 
 .auth-shell {
   min-height: 100vh;
+  min-height: 100svh;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: calc(24px + var(--safe-top)) calc(24px + var(--safe-right))
+    calc(24px + var(--safe-bottom)) calc(24px + var(--safe-left));
   background:
     linear-gradient(180deg, rgba(233, 247, 238, 0.88), rgba(247, 249, 246, 0.96)),
     var(--bg);
+}
+
+@supports (min-height: 100dvh) {
+  .app-shell,
+  .auth-shell {
+    min-height: 100dvh;
+  }
 }
 
 .auth-card {
@@ -296,10 +331,17 @@ a {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 14px 8px 14px;
+  height: 100svh;
+  padding: calc(14px + var(--safe-top)) 8px calc(14px + var(--safe-bottom));
   border-right: 1px solid var(--line);
   background: rgba(251, 253, 250, 0.94);
   backdrop-filter: blur(20px);
+}
+
+@supports (height: 100dvh) {
+  .sidebar {
+    height: 100dvh;
+  }
 }
 
 .brand-lockup {
@@ -447,7 +489,8 @@ a {
   align-items: center;
   gap: 18px;
   min-height: 80px;
-  padding: 14px 16px 14px 20px;
+  padding: calc(14px + var(--safe-top)) calc(16px + var(--safe-right)) 14px
+    calc(20px + var(--safe-left));
   border-bottom: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(18px);
@@ -609,7 +652,8 @@ a {
 .dashboard {
   display: grid;
   gap: 14px;
-  padding: 22px 28px 24px;
+  padding: 22px calc(28px + var(--safe-right)) calc(24px + var(--safe-bottom))
+    calc(28px + var(--safe-left));
 }
 
 .stats-row {
@@ -2570,7 +2614,8 @@ a {
   z-index: 40;
   display: grid;
   place-items: center;
-  padding: 20px;
+  padding: calc(20px + var(--safe-top)) calc(20px + var(--safe-right))
+    calc(20px + var(--safe-bottom)) calc(20px + var(--safe-left));
   background: rgba(15, 23, 18, 0.34);
   backdrop-filter: blur(10px);
 }
@@ -2646,7 +2691,7 @@ a {
 .toast {
   position: fixed;
   right: 22px;
-  bottom: 22px;
+  bottom: calc(22px + var(--safe-bottom));
   z-index: 60;
   display: inline-flex;
   align-items: center;
@@ -2753,6 +2798,10 @@ a {
 }
 
 @media (max-width: 980px) {
+  body::after {
+    height: calc(var(--safe-bottom) + 20px);
+  }
+
   .auth-card {
     grid-template-columns: 1fr;
   }
@@ -2767,8 +2816,12 @@ a {
 
   .sidebar {
     position: fixed;
+    top: 0;
+    bottom: 0;
     left: 0;
     width: 220px;
+    height: auto;
+    padding-left: calc(8px + var(--safe-left));
     transform: translateX(-105%);
     transition: transform 180ms ease;
     box-shadow: var(--shadow);
@@ -2809,6 +2862,8 @@ a {
   .topbar {
     grid-template-columns: 40px minmax(0, 1fr) auto;
     min-height: auto;
+    padding-right: calc(16px + var(--safe-right));
+    padding-left: calc(16px + var(--safe-left));
   }
 
   .topbar .mobile-menu {
@@ -2822,7 +2877,8 @@ a {
   }
 
   .dashboard {
-    padding: 16px;
+    padding: 16px calc(16px + var(--safe-right)) calc(32px + var(--safe-bottom))
+      calc(16px + var(--safe-left));
   }
 
   .kanban-board {
@@ -2880,7 +2936,8 @@ a {
 
 @media (max-width: 680px) {
   .auth-shell {
-    padding: 12px;
+    padding: calc(12px + var(--safe-top)) calc(12px + var(--safe-right))
+      calc(12px + var(--safe-bottom)) calc(12px + var(--safe-left));
     place-items: stretch;
   }
 
@@ -2903,7 +2960,18 @@ a {
 
   .topbar {
     gap: 10px;
-    padding: 12px;
+    padding: calc(12px + var(--safe-top)) calc(12px + var(--safe-right)) 12px
+      calc(12px + var(--safe-left));
+  }
+
+  .dashboard {
+    padding-bottom: calc(46px + var(--safe-bottom));
+  }
+
+  .toast {
+    right: calc(12px + var(--safe-right));
+    left: calc(12px + var(--safe-left));
+    justify-content: center;
   }
 
   .title-block h1 {
