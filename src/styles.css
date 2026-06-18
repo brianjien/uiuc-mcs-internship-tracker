@@ -57,20 +57,6 @@ body {
   }
 }
 
-body::after {
-  position: fixed;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 35;
-  height: var(--safe-bottom);
-  pointer-events: none;
-  background: linear-gradient(180deg, rgba(247, 249, 246, 0), rgba(247, 249, 246, 0.24));
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  content: "";
-}
-
 button,
 input,
 select,
@@ -2928,10 +2914,6 @@ a {
 }
 
 @media (max-width: 980px) {
-  body::after {
-    height: calc(var(--safe-bottom) + 20px);
-  }
-
   .auth-card {
     grid-template-columns: 1fr;
   }
@@ -3007,7 +2989,7 @@ a {
   }
 
   .dashboard {
-    padding: 16px calc(16px + var(--safe-right)) calc(32px + var(--safe-bottom))
+    padding: 16px calc(16px + var(--safe-right)) calc(88px + var(--safe-bottom))
       calc(16px + var(--safe-left));
   }
 
@@ -3095,7 +3077,7 @@ a {
   }
 
   .dashboard {
-    padding-bottom: calc(46px + var(--safe-bottom));
+    padding-bottom: calc(112px + var(--safe-bottom));
   }
 
   .toast {
