@@ -509,6 +509,149 @@ function DocumentPreviewPanel({ document }) {
   );
 }
 
+function getOpportunityRoleType(job = {}) {
+  const text = `${job.role || ""} ${job.season || ""} ${(job.tags || []).join(" ")}`.toLowerCase();
+  if (text.includes("new grad") || text.includes("graduate") || text.includes("entry level") || text.includes("early career")) {
+    return "New Grad";
+  }
+  if (text.includes("intern") || text.includes("co-op")) return "Internship";
+  return job.season === "New Grad" ? "New Grad" : "Role";
+}
+
+function getOpportunityRequirementItems(job = {}) {
+  const items = [
+    { label: "Role Type", value: getOpportunityRoleType(job) },
+    { label: "Season", value: job.season || "Not listed" },
+    { label: "Location", value: job.location || "Not listed" },
+    { label: "Work Mode", value: job.mode || "Not listed" },
+    { label: "Sponsorship", value: job.sponsorship === "Unknown" ? "Verify on posting" : job.sponsorship },
+    { label: "Posted", value: job.posted || "Not listed" },
+  ];
+  if (job.deadline) items.push({ label: "Deadline", value: formatDate(job.deadline) });
+  if (job.requirements) items.push({ label: "Listed Term", value: job.requirements });
+  items.push({ label: "Source", value: job.source || "Public feed" });
+  return items;
+}
+
+function getOpportunitySignals(job = {}) {
+  const text = `${job.role || ""} ${job.summary || ""} ${job.description || ""} ${(job.tags || []).join(" ")}`.toLowerCase();
+  const signals = [];
+  if (text.includes("software")) signals.push("Software engineering keyword match");
+  if (text.includes("machine learning") || /\bml\b/.test(text) || text.includes(" ai ")) signals.push("ML / AI signal");
+  if (text.includes("data")) signals.push("Data signal");
+  if (text.includes("backend") || text.includes("platform") || text.includes("systems")) signals.push("Backend, platform, or systems signal");
+  if ((job.season || "").match(/2026 Fall|2027|New Grad/i)) signals.push("Matches selected cycle");
+  if ((job.mode || "").toLowerCase() === "remote") signals.push("Remote-friendly listing");
+  if (!signals.length) signals.push("General role metadata match");
+  return signals.slice(0, 5);
+}
+
+function OpportunityPreviewModal({ job, imported, onClose, onImport }) {
+  const requirementItems = getOpportunityRequirementItems(job);
+  const signals = getOpportunitySignals(job);
+  const description = String(job.description || job.summary || "").trim();
+  const hasSource = isOpenableUrl(job.sourceUrl);
+
+  return (
+    <div
+      className="modal-backdrop opportunity-preview-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${job.role} preview`}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="opportunity-preview-modal">
+        <div className="opportunity-preview-head">
+          <CompanyLogo company={job.company} />
+          <span>
+            <strong>{job.role}</strong>
+            <small>{job.company} · {job.location}</small>
+          </span>
+          <div className="opportunity-preview-actions">
+            {hasSource ? (
+              <a className="secondary-button" href={job.sourceUrl} target="_blank" rel="noreferrer">
+                Apply <ArrowUpRight size={14} aria-hidden="true" />
+              </a>
+            ) : (
+              <button className="secondary-button" type="button" disabled>
+                Apply
+              </button>
+            )}
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => {
+                onImport(job);
+                onClose();
+              }}
+              disabled={imported}
+            >
+              {imported ? "Imported" : "Import"}
+            </button>
+            <button className="icon-button" type="button" onClick={onClose} aria-label="Close preview">
+              <X size={18} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+        <div className="opportunity-preview-body">
+          <section className="opportunity-preview-summary">
+            <div>
+              <span>Match</span>
+              <strong>{job.match || "-"}%</strong>
+            </div>
+            <div>
+              <span>Source</span>
+              <strong>{job.source || "Public feed"}</strong>
+            </div>
+            <div>
+              <span>Status</span>
+              <strong>{imported ? "Imported" : "Not imported"}</strong>
+            </div>
+          </section>
+
+          <section className="opportunity-preview-section">
+            <h3>Requirements and conditions</h3>
+            <div className="opportunity-requirement-grid">
+              {requirementItems.map((item) => (
+                <span key={`${item.label}-${item.value}`}>
+                  {item.label}
+                  <strong>{item.value}</strong>
+                </span>
+              ))}
+            </div>
+          </section>
+
+          <section className="opportunity-preview-section">
+            <h3>Match signals</h3>
+            <div className="opportunity-signal-list">
+              {signals.map((signal) => (
+                <span key={signal}>
+                  <Check size={13} aria-hidden="true" />
+                  {signal}
+                </span>
+              ))}
+            </div>
+          </section>
+
+          <section className="opportunity-preview-section">
+            <h3>Posting preview</h3>
+            {description ? (
+              <p>{description}</p>
+            ) : (
+              <p>
+                This source does not publish a full job description in the feed. Open the original posting to verify
+                degree, graduation date, sponsorship, location, and technical requirements before applying.
+              </p>
+            )}
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MetricCard({ label, value, caption, icon: Icon, tone = "green" }) {
   return (
     <article className="metric-card">
@@ -1261,6 +1404,16 @@ function LiveSearchView({
   sources,
 }) {
   const hasActiveFilters = Boolean(liveQuery.trim()) || liveSeason !== "all" || liveRemote !== "all";
+  const [previewJob, setPreviewJob] = useState(null);
+
+  useEffect(() => {
+    if (!previewJob) return undefined;
+    function closeOnEscape(event) {
+      if (event.key === "Escape") setPreviewJob(null);
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [previewJob]);
 
   return (
     <section className="view-shell live-search-view">
@@ -1349,6 +1502,7 @@ function LiveSearchView({
       <div className="opportunity-list">
         {liveJobs.map((job) => {
           const imported = importedIds.has(job.id);
+          const hasSource = isOpenableUrl(job.sourceUrl);
           return (
             <article key={job.id} className="opportunity-row">
               <CompanyLogo company={job.company} />
@@ -1373,9 +1527,19 @@ function LiveSearchView({
                 <span>match</span>
               </div>
               <div className="opportunity-actions">
-                <a className="secondary-button" href={job.sourceUrl || "#"} target="_blank" rel="noreferrer">
-                  Apply <ArrowUpRight size={14} aria-hidden="true" />
-                </a>
+                <button className="secondary-button opportunity-preview-button" type="button" onClick={() => setPreviewJob(job)}>
+                  <Eye size={14} aria-hidden="true" />
+                  Preview
+                </button>
+                {hasSource ? (
+                  <a className="secondary-button" href={job.sourceUrl} target="_blank" rel="noreferrer">
+                    Apply <ArrowUpRight size={14} aria-hidden="true" />
+                  </a>
+                ) : (
+                  <button className="secondary-button" type="button" disabled>
+                    Apply
+                  </button>
+                )}
                 <button className="primary-button" type="button" onClick={() => onImport(job)} disabled={imported}>
                   {imported ? "Imported" : "Import"}
                 </button>
@@ -1390,6 +1554,15 @@ function LiveSearchView({
           <Plus size={16} aria-hidden="true" />
           Load more live roles
         </button>
+      )}
+
+      {previewJob && (
+        <OpportunityPreviewModal
+          job={previewJob}
+          imported={importedIds.has(previewJob.id)}
+          onClose={() => setPreviewJob(null)}
+          onImport={onImport}
+        />
       )}
     </section>
   );

@@ -2001,6 +2001,161 @@ a {
   cursor: default;
 }
 
+.opportunity-preview-button {
+  border-color: #aad4bb;
+  background: #f4fff8;
+  color: var(--green-strong);
+}
+
+.opportunity-preview-backdrop {
+  z-index: 74;
+}
+
+.opportunity-preview-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(900px, 100%);
+  max-height: min(780px, calc(100dvh - 44px - var(--safe-top) - var(--safe-bottom)));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.2);
+}
+
+.opportunity-preview-head {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 68px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(248, 251, 248, 0.94);
+}
+
+.opportunity-preview-head > span:nth-child(2) {
+  min-width: 0;
+}
+
+.opportunity-preview-head strong,
+.opportunity-preview-head small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opportunity-preview-head strong {
+  font-size: 15px;
+}
+
+.opportunity-preview-head small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.opportunity-preview-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.opportunity-preview-body {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  background: #f7faf7;
+}
+
+.opportunity-preview-summary {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) 130px;
+  gap: 9px;
+}
+
+.opportunity-preview-summary div,
+.opportunity-requirement-grid span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid #e2eadf;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 780;
+}
+
+.opportunity-preview-summary strong,
+.opportunity-requirement-grid strong {
+  overflow: hidden;
+  color: #263229;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opportunity-preview-summary div:first-child strong {
+  color: var(--green);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.opportunity-preview-section {
+  display: grid;
+  gap: 9px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.opportunity-preview-section h3 {
+  margin: 0;
+  color: #253128;
+  font-size: 13px;
+}
+
+.opportunity-preview-section p {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  color: #3d4941;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.opportunity-requirement-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.opportunity-signal-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.opportunity-signal-list span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: var(--green-soft);
+  color: var(--green-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .load-more-button {
   justify-self: center;
 }
@@ -2896,6 +3051,10 @@ a {
     justify-content: flex-start;
   }
 
+  .opportunity-requirement-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .inline-data-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3265,7 +3424,49 @@ a {
   .opportunity-actions {
     grid-column: 1 / -1;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .opportunity-actions .secondary-button,
+  .opportunity-actions .primary-button {
+    min-width: 0;
+    padding: 0 8px;
+  }
+
+  .opportunity-preview-modal {
+    max-height: calc(100dvh - 24px - var(--safe-top) - var(--safe-bottom));
+  }
+
+  .opportunity-preview-head {
+    grid-template-columns: 38px minmax(0, 1fr) 34px;
+    gap: 9px;
+    padding: 10px;
+  }
+
+  .opportunity-preview-head .icon-button {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .opportunity-preview-actions {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: 1fr 1fr 34px;
+    width: 100%;
+  }
+
+  .opportunity-preview-actions .icon-button {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .opportunity-preview-summary,
+  .opportunity-requirement-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .opportunity-preview-section p {
+    max-height: 180px;
   }
 
   .task-form {

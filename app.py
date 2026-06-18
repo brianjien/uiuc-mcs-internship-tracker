@@ -543,6 +543,8 @@ def normalize_job(job):
         "contactRole": "",
         "contactEmail": "",
         "summary": job.get("summary") or "Fetched from a public jobs source. Review the original posting before applying.",
+        "description": job.get("description") or job.get("requirements") or "",
+        "requirements": job.get("requirements") or "",
         "notes": "Imported from live feed. Tailor resume and verify sponsorship/location details.",
         "tags": job.get("tags") or ["Live"],
         "nextStep": "Open the posting, verify fit, and decide whether to apply.",
@@ -594,6 +596,7 @@ def parse_simplify_markdown(markdown, source):
                     "sourceUrl": source_url,
                     "tags": [item for item in [inferred_season, role_type, terms or "Tech"] if item],
                     "summary": f"{role} at {last_company}. Listed in {source['name']}{f' for {terms}' if terms else ''}.",
+                    "requirements": terms or "",
                 }
             )
         )
@@ -645,6 +648,7 @@ def fetch_remotive():
                     "posted": str(row.get("publication_date") or "")[:10],
                     "tags": [item for item in ["Remote", row.get("category")] if item],
                     "summary": strip_tags(row.get("description") or "")[:180] or "Remote role from Remotive.",
+                    "description": strip_tags(row.get("description") or "")[:1800],
                 }
             )
         )
@@ -660,6 +664,7 @@ def fetch_remoteok():
         if not re.search(r"intern|internship|co-op|new grad|graduate|entry level|early career|software|engineer|machine learning|data", title, re.I):
             continue
         tags = row.get("tags") if isinstance(row.get("tags"), list) else []
+        description = strip_tags(row.get("description") or "")
         jobs.append(
             normalize_job(
                 {
@@ -673,7 +678,8 @@ def fetch_remoteok():
                     "sourceUrl": row.get("url"),
                     "posted": str(row.get("date") or "")[:10],
                     "tags": ["Remote", *tags[:3]],
-                    "summary": f"Remote role listed by {row.get('company') or 'company'} on RemoteOK.",
+                    "summary": description[:180] or f"Remote role listed by {row.get('company') or 'company'} on RemoteOK.",
+                    "description": description[:1800],
                 }
             )
         )
@@ -683,7 +689,7 @@ def fetch_remoteok():
 def fetch_greenhouse():
     jobs = []
     for board in greenhouse_boards:
-        data = fetch_json(f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs")
+        data = fetch_json(f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true")
         rows = data.get("jobs", []) if isinstance(data, dict) else []
         company = data.get("name") if isinstance(data, dict) else ""
         for row in rows:
@@ -692,6 +698,7 @@ def fetch_greenhouse():
                 continue
             location = (row.get("location") or {}).get("name") or "Location not listed"
             season = infer_season(title, "", "2027" if "2027" in title else "2026")
+            description = strip_tags(row.get("content") or "")
             jobs.append(
                 normalize_job(
                     {
@@ -705,7 +712,8 @@ def fetch_greenhouse():
                         "sourceUrl": row.get("absolute_url"),
                         "posted": str(row.get("updated_at") or "")[:10],
                         "tags": [item for item in ["Company Board", board, season] if item],
-                        "summary": f"{title} from {company or board}'s public Greenhouse board.",
+                        "summary": description[:180] or f"{title} from {company or board}'s public Greenhouse board.",
+                        "description": description[:1800],
                     }
                 )
             )
