@@ -1,45 +1,34 @@
 # Wasmer Deployment
 
-This project is configured as a full-stack Wasmer Edge app:
+Production is live at:
 
-- `server/http.mjs` serves the built React app and handles `/api/*`.
-- `server/api.mjs` handles auth, profile, workspace persistence, health checks, and live jobs.
-- `server/db.mjs` stores accounts, sessions, and workspace data in MySQL.
-- `scripts/build-server.mjs` bundles the Node backend for Wasmer Edge.
+```bash
+https://internship-tracker.wasmer.app
+```
 
-The backend runs on Wasmer's Node-compatible Edge.js runtime because the MySQL driver needs Node networking APIs. The entrypoint is configured in `wasmer.toml` via `main-args`.
+The Wasmer deployment uses the Python/Flask entrypoint in `app.py`. The small `a.py` file re-exports the Flask app because Wasmer Shipit currently launches Flask projects as `a:app`.
+
+## Runtime
+
+- `app.py` serves the built React app from `dist/`.
+- `app.py` handles `/api/*` for auth, Google sign-in, workspace persistence, health checks, and live job fetching.
+- MySQL data is stored in `users`, `sessions`, and `workspace_data`.
+- Live jobs are fetched dynamically from SimplifyJobs, Greenhouse public boards, Remotive, and RemoteOK.
+
+The older Node/EdgeJS path is still present for local development, but the production Wasmer app is using Flask because the EdgeJS package currently fails on the Wasmer N-API runtime.
 
 ## Local Full-Stack Test
 
 ```bash
 npm run build
-npm start
+PORT=8796 python3 app.py
 ```
 
-Open `http://127.0.0.1:8787`.
-
-## Wasmer Local Test
-
-```bash
-npm run wasmer:local
-```
-
-Wasmer serves the full-stack app locally at `http://127.0.0.1:8080`.
-
-## Deploy
-
-Install and authenticate Wasmer first:
-
-```bash
-curl https://get.wasmer.io -sSfL | sh
-wasmer login
-```
-
-If your Wasmer namespace is not `brianjien`, update it in `wasmer.toml` and `app.yaml`.
+Open `http://127.0.0.1:8796`.
 
 ## Database
 
-`app.yaml` is configured for the Wasmer database capability in the `fr-pari1` region. Wasmer provides these environment variables to the app:
+Wasmer provides these environment variables to the app:
 
 ```bash
 DB_HOST
@@ -51,50 +40,48 @@ DB_PASSWORD
 
 The backend also accepts `DB_USER` as an alias for `DB_USERNAME`.
 
-Keep real database values out of GitHub. For manual secret setup, copy `.env.example` to a local ignored file, fill in the values, and upload it through the Wasmer dashboard Secrets tab or the CLI:
-
-```bash
-wasmer app secrets create --from-file=.env.local
-```
+Keep real database values out of GitHub. For local work, copy `.env.example` to an ignored env file and fill in the values locally.
 
 ## Google Sign-In
 
-The app uses Google Identity Services in the browser and verifies the returned ID token on the backend with Google Auth Library. The provided OAuth client ID is configured in code as a public fallback. If you rotate it, set both:
+The Google OAuth client must include the exact production callback:
 
 ```bash
-GOOGLE_CLIENT_ID
-VITE_GOOGLE_CLIENT_ID
+https://internship-tracker.wasmer.app/api/auth/google/redirect
 ```
 
-The Google button uses redirect UX mode so it does not get stuck in a popup transform page. In Google Cloud Console, add the local and deployed app URLs to the OAuth client's Authorized JavaScript origins, and add the callback endpoint to Authorized redirect URIs.
-
-Local origins:
-
-```bash
-http://127.0.0.1:8794
-http://localhost:8794
-```
-
-Local redirect URIs:
+For local testing, also add:
 
 ```bash
 http://127.0.0.1:8794/api/auth/google/redirect
 http://localhost:8794/api/auth/google/redirect
 ```
 
-Deployed origin and redirect URI:
+Authorized JavaScript origins should include:
 
 ```bash
-https://career-tracker-dashboard.wasmer.app
-https://career-tracker-dashboard.wasmer.app/api/auth/google/redirect
+https://internship-tracker.wasmer.app
+http://127.0.0.1:8794
+http://localhost:8794
 ```
 
-If Wasmer prints a different production URL after deploy, add that exact origin and the same `/api/auth/google/redirect` callback path.
+## Deploy
 
-Then deploy:
+Build the frontend first:
 
 ```bash
-npm run wasmer:deploy
+npm run build
 ```
 
-The app URL will look like `https://<app-name>-<app-owner>.wasmer.app`.
+Then deploy the Flask app with Wasmer remote build. Use the Wasmer app name/owner that owns the `internship-tracker.wasmer.app` alias.
+
+```bash
+wasmer deploy --build-remote --non-interactive --no-persist-id
+```
+
+After deploy, verify:
+
+```bash
+curl https://internship-tracker.wasmer.app/api/health
+curl 'https://internship-tracker.wasmer.app/api/jobs?refresh=true&limit=10'
+```

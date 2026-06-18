@@ -5,6 +5,8 @@
 .npm-cache/
 .npmrc
 node_modules/
+__pycache__/
+*.pyc
 dist/
 server-dist/
 edge/static-assets.generated.mjs
