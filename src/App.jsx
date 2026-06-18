@@ -471,8 +471,9 @@ function downloadBlob(blob, filename) {
 function serializeSvg(svgElement) {
   const clone = svgElement.cloneNode(true);
   clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  clone.setAttribute("width", "1120");
-  clone.setAttribute("height", "520");
+  const [, , width = "1120", height = "520"] = (clone.getAttribute("viewBox") || "").split(/\s+/);
+  clone.setAttribute("width", width);
+  clone.setAttribute("height", height);
   const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
   style.textContent = sankeyExportStyles;
   clone.insertBefore(style, clone.firstChild);
@@ -486,14 +487,17 @@ function downloadSvg(svgElement, filename) {
 
 function downloadSvgAsPng(svgElement, filename) {
   if (!svgElement) return;
+  const [, , rawWidth = "1120", rawHeight = "520"] = (svgElement.getAttribute("viewBox") || "").split(/\s+/);
+  const width = Number(rawWidth) || 1120;
+  const height = Number(rawHeight) || 520;
   const svgString = serializeSvg(svgElement);
   const svgUrl = URL.createObjectURL(new Blob([svgString], { type: "image/svg+xml;charset=utf-8" }));
   const image = new Image();
   image.onload = () => {
     const canvas = document.createElement("canvas");
     const scale = 2;
-    canvas.width = 1120 * scale;
-    canvas.height = 520 * scale;
+    canvas.width = width * scale;
+    canvas.height = height * scale;
     const context = canvas.getContext("2d");
     if (!context) {
       URL.revokeObjectURL(svgUrl);
@@ -512,10 +516,56 @@ function downloadSvgAsPng(svgElement, filename) {
 }
 
 function daysUntil(value) {
+  if (!value) return Number.POSITIVE_INFINITY;
   const today = new Date();
   const deadline = new Date(`${value}T12:00:00`);
+  if (Number.isNaN(deadline.getTime())) return Number.POSITIVE_INFINITY;
   const diff = deadline.getTime() - today.getTime();
   return Math.ceil(diff / (1000 * 60 * 60 * 24));
+}
+
+function parseDateValue(value) {
+  if (!value) return null;
+  const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T12:00:00` : value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function compareDateValues(left, right) {
+  const leftDate = parseDateValue(left)?.getTime() ?? Number.POSITIVE_INFINITY;
+  const rightDate = parseDateValue(right)?.getTime() ?? Number.POSITIVE_INFINITY;
+  return leftDate - rightDate;
+}
+
+function formatRelativeDate(value) {
+  if (!value) return "No date";
+  const days = daysUntil(value);
+  if (!Number.isFinite(days)) return "No date";
+  if (days < 0) return `${Math.abs(days)}d overdue`;
+  if (days === 0) return "Today";
+  if (days === 1) return "Tomorrow";
+  if (days <= 7) return `${days}d left`;
+  return formatDate(value);
+}
+
+function createCalendarFile(event) {
+  const date = parseDateValue(event.date);
+  if (!date) return null;
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").split(".")[0];
+  const yyyymmdd = date.toISOString().slice(0, 10).replace(/-/g, "");
+  const escapeText = (value = "") => String(value).replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
+  return [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Career Tracker//Application Calendar//EN",
+    "BEGIN:VEVENT",
+    `UID:${event.id || `${stamp}@career-tracker`}`,
+    `DTSTAMP:${stamp}Z`,
+    `DTSTART;VALUE=DATE:${yyyymmdd}`,
+    `SUMMARY:${escapeText(event.title)}`,
+    `DESCRIPTION:${escapeText(event.description || "")}`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
 }
 
 function classNames(...values) {
@@ -780,6 +830,31 @@ function JobSearchSankey({ jobs, svgRef }) {
   const flowScale = Math.min(30, 150 / maxFlow);
   const activeCompanies = new Set(jobs.map((job) => job.company).filter(Boolean)).size;
 
+  if (counts.total === 0) {
+    return (
+      <svg
+        ref={svgRef}
+        className="sankey-svg sankey-svg-empty"
+        viewBox="0 0 720 420"
+        role="img"
+        aria-label="Empty job search Sankey diagram"
+      >
+        <rect width="720" height="420" rx="8" fill="#ffffff" />
+        <circle cx="360" cy="148" r="48" fill="#e4f7ec" />
+        <path d="M328 148h64M360 116v64" stroke="#087b45" strokeWidth="10" strokeLinecap="round" />
+        <text x="360" y="238" textAnchor="middle" className="sankey-title">
+          Job Search Sankey
+        </text>
+        <text x="360" y="270" textAnchor="middle" className="sankey-subtitle">
+          Import or add roles to generate your diagram.
+        </text>
+        <text x="360" y="298" textAnchor="middle" className="sankey-empty-copy">
+          Saved, applied, OA, interview, and offer stages will turn into flows automatically.
+        </text>
+      </svg>
+    );
+  }
+
   return (
     <svg ref={svgRef} className="sankey-svg" viewBox="0 0 1120 520" role="img" aria-label="Job search Sankey diagram">
       <rect width="1120" height="520" rx="8" fill="#ffffff" />
@@ -816,12 +891,6 @@ function JobSearchSankey({ jobs, svgRef }) {
           </text>
         </g>
       ))}
-
-      {counts.total === 0 && (
-        <g className="sankey-empty">
-          <text x="560" y="250" textAnchor="middle">Import or add roles to generate your Sankey diagram.</text>
-        </g>
-      )}
     </svg>
   );
 }
@@ -1153,7 +1222,7 @@ function DetailPanel({ job, onClose, onStageChange, onUpdateNotes, onCompleteNex
             <h3>Role Summary</h3>
             <p>{job.summary}</p>
             <div className="tag-list">
-              {job.tags.map((tag) => (
+              {(job.tags || []).map((tag) => (
                 <span key={tag}>{tag}</span>
               ))}
             </div>
@@ -1713,7 +1782,7 @@ function LiveSearchView({
                   <span>{job.season}</span>
                   <span>{job.mode}</span>
                   <span>{job.source}</span>
-                  {job.tags.slice(0, 2).map((tag) => (
+                  {(job.tags || []).slice(0, 2).map((tag) => (
                     <span key={`${job.id}-${tag}`}>{tag}</span>
                   ))}
                 </div>
@@ -1811,8 +1880,8 @@ function CompaniesView({ jobs, liveJobs, onSelectCompany }) {
   );
 }
 
-function ContactsView({ contacts, jobs, onAddContact }) {
-  const [draft, setDraft] = useState({ name: "", company: "", role: "", email: "" });
+function ContactsView({ contacts, jobs, onAddContact, onCreateTask, onSelectJob }) {
+  const [draft, setDraft] = useState({ name: "", company: "", role: "", email: "", next: "" });
   const jobContacts = jobs
     .filter((job) => job.contact)
     .map((job) => ({
@@ -1822,8 +1891,20 @@ function ContactsView({ contacts, jobs, onAddContact }) {
       company: job.company,
       email: job.contactEmail,
       next: job.nextStep,
+      source: "Pipeline",
+      sourceJobId: job.id,
     }));
-  const rows = [...contacts, ...jobContacts];
+  const rows = [...contacts.map((contact) => ({ ...contact, source: contact.source || "Manual" })), ...jobContacts]
+    .filter((contact, index, list) => {
+      const key = `${String(contact.email || "").toLowerCase()}-${String(contact.name || "").toLowerCase()}-${String(contact.company || "").toLowerCase()}`;
+      return list.findIndex((item) => `${String(item.email || "").toLowerCase()}-${String(item.name || "").toLowerCase()}-${String(item.company || "").toLowerCase()}` === key) === index;
+    })
+    .sort((left, right) => String(left.company || "").localeCompare(String(right.company || "")));
+  const stats = [
+    { label: "contacts", value: rows.length },
+    { label: "with email", value: rows.filter((contact) => contact.email).length },
+    { label: "linked roles", value: rows.filter((contact) => contact.sourceJobId).length },
+  ];
 
   function update(field, value) {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -1838,19 +1919,42 @@ function ContactsView({ contacts, jobs, onAddContact }) {
       company: draft.company.trim(),
       role: draft.role.trim(),
       email: draft.email.trim(),
-      next: "Follow up when ready.",
+      next: draft.next.trim() || "Follow up when ready.",
+      source: "Manual",
     });
-    setDraft({ name: "", company: "", role: "", email: "" });
+    setDraft({ name: "", company: "", role: "", email: "", next: "" });
+  }
+
+  function createFollowUp(contact) {
+    const due = new Date();
+    due.setDate(due.getDate() + 2);
+    onCreateTask({
+      title: `Follow up with ${contact.name}`,
+      subtitle: `${contact.company || "Contact"} · ${contact.role || "Networking"}`,
+      due: due.toISOString().slice(0, 10),
+      priority: "High",
+      sourceJobId: contact.sourceJobId || "",
+      icon: Mail,
+    });
   }
 
   return (
     <section className="view-shell">
       <ViewHeader eyebrow="Contacts" title="Recruiter and alumni CRM" />
+      <div className="utility-stat-row">
+        {stats.map((item) => (
+          <article key={item.label}>
+            <strong>{item.value}</strong>
+            <span>{item.label}</span>
+          </article>
+        ))}
+      </div>
       <form className="inline-data-form" onSubmit={submit}>
         <input value={draft.name} onChange={(event) => update("name", event.target.value)} placeholder="Name" />
         <input value={draft.company} onChange={(event) => update("company", event.target.value)} placeholder="Company" />
         <input value={draft.role} onChange={(event) => update("role", event.target.value)} placeholder="Role or note" />
         <input value={draft.email} onChange={(event) => update("email", event.target.value)} placeholder="Email" />
+        <input value={draft.next} onChange={(event) => update("next", event.target.value)} placeholder="Next touch" />
         <button className="secondary-button" type="submit">
           <Plus size={16} aria-hidden="true" />
           Add Contact
@@ -1859,16 +1963,47 @@ function ContactsView({ contacts, jobs, onAddContact }) {
       {rows.length === 0 && (
         <EmptyState icon={Users} title="No contacts yet" text="Add recruiters, alumni, or referrals here as you find them." />
       )}
-      <div className="data-table">
+      <div className="contact-grid">
         {rows.map((contact) => (
-          <article key={contact.id || `${contact.company}-${contact.name}`}>
-            <span className="contact-avatar">{contact.name.slice(0, 2).toUpperCase()}</span>
-            <div>
-              <strong>{contact.name}</strong>
-              <p>{contact.role} · {contact.company}</p>
+          <article key={contact.id || `${contact.company}-${contact.name}`} className="contact-card">
+            <div className="contact-card-head">
+              <span className="contact-avatar">{contact.name.slice(0, 2).toUpperCase()}</span>
+              <span>
+                <strong>{contact.name}</strong>
+                <p>{contact.role || "Contact"} · {contact.company || "Company"}</p>
+              </span>
+              <small>{contact.source}</small>
             </div>
-            <a href={contact.email ? `mailto:${contact.email}` : "#"}>{contact.email || "No email yet"}</a>
-            <small>{contact.next}</small>
+            <div className="contact-next">
+              <Clock3 size={14} aria-hidden="true" />
+              <span>{contact.next || "Add a next touch after your conversation."}</span>
+            </div>
+            <div className="contact-actions">
+              {contact.email ? (
+                <a
+                  className="secondary-button"
+                  href={`mailto:${contact.email}?subject=${encodeURIComponent(`Following up about ${contact.company || "opportunities"}`)}`}
+                >
+                  <Mail size={14} aria-hidden="true" />
+                  Email
+                </a>
+              ) : (
+                <button className="secondary-button" type="button" disabled>
+                  <Mail size={14} aria-hidden="true" />
+                  Email
+                </button>
+              )}
+              <button className="secondary-button" type="button" onClick={() => createFollowUp(contact)}>
+                <Plus size={14} aria-hidden="true" />
+                Task
+              </button>
+              {contact.sourceJobId && (
+                <button className="secondary-button" type="button" onClick={() => onSelectJob(contact.sourceJobId)}>
+                  <BriefcaseBusiness size={14} aria-hidden="true" />
+                  Role
+                </button>
+              )}
+            </div>
           </article>
         ))}
       </div>
@@ -1876,59 +2011,204 @@ function ContactsView({ contacts, jobs, onAddContact }) {
   );
 }
 
-function CalendarView({ jobs, onSelectJob }) {
-  const events = [...jobs]
-    .filter((job) => job.deadline)
-    .sort((left, right) => new Date(left.deadline) - new Date(right.deadline))
-    .slice(0, 14);
+function CalendarView({ jobs, tasks, onSelectJob, onToggleTask }) {
+  const events = [
+    ...jobs
+      .filter((job) => job.deadline)
+      .map((job) => ({
+        id: `job-${job.id}`,
+        type: "Deadline",
+        date: job.deadline,
+        title: `${job.company} application`,
+        description: `${job.role} · ${stages.find((stage) => stage.id === job.stage)?.label || "Pipeline"}`,
+        stage: job.stage,
+        jobId: job.id,
+      })),
+    ...tasks
+      .filter((task) => task.due)
+      .map((task) => ({
+        id: `task-${task.id}`,
+        type: task.done ? "Done" : "Task",
+        date: task.due,
+        title: task.title,
+        description: task.subtitle || task.priority || "Task",
+        taskId: task.id,
+        done: task.done,
+      })),
+  ].sort((left, right) => compareDateValues(left.date, right.date));
+  const stats = [
+    { label: "overdue", value: events.filter((event) => !event.done && daysUntil(event.date) < 0).length },
+    { label: "today", value: events.filter((event) => !event.done && daysUntil(event.date) === 0).length },
+    { label: "next 7 days", value: events.filter((event) => !event.done && daysUntil(event.date) >= 0 && daysUntil(event.date) <= 7).length },
+  ];
+
+  function downloadEvent(event) {
+    const file = createCalendarFile(event);
+    if (!file) return;
+    const filename = `${event.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "career-event"}.ics`;
+    downloadBlob(new Blob([file], { type: "text/calendar;charset=utf-8" }), filename);
+  }
 
   return (
     <section className="view-shell">
       <ViewHeader eyebrow="Calendar" title="Deadlines and interviews" />
+      <div className="utility-stat-row">
+        {stats.map((item) => (
+          <article key={item.label}>
+            <strong>{item.value}</strong>
+            <span>{item.label}</span>
+          </article>
+        ))}
+      </div>
       {events.length === 0 && (
-        <EmptyState icon={CalendarDays} title="No deadlines yet" text="Import or add roles with deadlines and they will appear here." />
+        <EmptyState icon={CalendarDays} title="No dates yet" text="Role deadlines and task due dates will appear here automatically." />
       )}
       <div className="timeline-list">
-        {events.map((job) => (
-          <button key={job.id} type="button" onClick={() => onSelectJob(job.id)}>
-            <span className={classNames("calendar-dot", `dot-${job.stage}`)} />
+        {events.map((event) => (
+          <article key={event.id} className={classNames("calendar-event", event.done && "is-done")}>
+            <span className={classNames("calendar-dot", event.stage ? `dot-${event.stage}` : "dot-task")} />
             <div>
-              <strong>{formatDate(job.deadline, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</strong>
-              <p>{job.company} · {job.role}</p>
+              <strong>{formatDate(event.date, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</strong>
+              <p>{event.title} · {event.description}</p>
             </div>
-            <span>{stages.find((stage) => stage.id === job.stage)?.label}</span>
-          </button>
+            <span className={classNames("date-chip", daysUntil(event.date) < 0 && !event.done && "is-overdue")}>
+              {event.type} · {formatRelativeDate(event.date)}
+            </span>
+            <div className="calendar-actions">
+              {event.jobId && (
+                <button className="secondary-button" type="button" onClick={() => onSelectJob(event.jobId)}>
+                  Open
+                </button>
+              )}
+              {event.taskId && !event.done && (
+                <button className="secondary-button" type="button" onClick={() => onToggleTask(event.taskId)}>
+                  Done
+                </button>
+              )}
+              <button className="secondary-button" type="button" onClick={() => downloadEvent(event)}>
+                <Download size={14} aria-hidden="true" />
+                ICS
+              </button>
+            </div>
+          </article>
         ))}
       </div>
     </section>
   );
 }
 
-function TasksView({ tasks, onToggleTask, onAddTask }) {
-  const [draft, setDraft] = useState("");
+function TasksView({ tasks, jobs, onToggleTask, onAddTask }) {
+  const [draft, setDraft] = useState({ title: "", due: "", priority: "Medium" });
+  const [filter, setFilter] = useState("open");
+  const suggestions = jobs
+    .filter((job) => job.stage !== "offer")
+    .slice(0, 5)
+    .map((job) => {
+      const stageLabel = stages.find((stage) => stage.id === job.stage)?.label || "Pipeline";
+      const templates = {
+        saved: { title: `Tailor resume for ${job.company}`, subtitle: `${job.role} · apply after eligibility check`, icon: Pencil, priority: "High" },
+        applied: { title: `Follow up with ${job.company}`, subtitle: `${job.role} · check status or recruiter contact`, icon: Mail, priority: "Medium" },
+        oa: { title: `Prep OA for ${job.company}`, subtitle: `${job.role} · practice timed problems`, icon: FlaskConical, priority: "High" },
+        interview: { title: `Prep interview notes for ${job.company}`, subtitle: `${job.role} · stories, questions, and system design`, icon: Users, priority: "High" },
+      };
+      return {
+        id: `suggestion-${job.id}`,
+        sourceJobId: job.id,
+        due: job.deadline || "",
+        ...(templates[job.stage] || { title: `Move ${job.company} forward`, subtitle: `${job.role} · ${stageLabel}`, icon: CheckSquare2, priority: "Medium" }),
+      };
+    })
+    .filter((suggestion) => !tasks.some((task) => task.title === suggestion.title));
+  const sortedTasks = [...tasks].sort((left, right) => {
+    if (left.done !== right.done) return left.done ? 1 : -1;
+    const dueCompare = compareDateValues(left.due, right.due);
+    if (dueCompare !== 0) return dueCompare;
+    const priorityRank = { High: 0, Medium: 1, Low: 2 };
+    return (priorityRank[left.priority] ?? 1) - (priorityRank[right.priority] ?? 1);
+  });
+  const visibleTasks = sortedTasks.filter((task) => {
+    if (filter === "done") return task.done;
+    if (filter === "due") return !task.done && task.due && daysUntil(task.due) <= 7;
+    if (filter === "all") return true;
+    return !task.done;
+  });
+  const stats = [
+    { label: "open", value: tasks.filter((task) => !task.done).length },
+    { label: "due soon", value: tasks.filter((task) => !task.done && task.due && daysUntil(task.due) <= 7).length },
+    { label: "done", value: tasks.filter((task) => task.done).length },
+  ];
 
   function submit(event) {
     event.preventDefault();
-    if (!draft.trim()) return;
-    onAddTask(draft.trim());
-    setDraft("");
+    if (!draft.title.trim()) return;
+    onAddTask({
+      title: draft.title.trim(),
+      due: draft.due,
+      priority: draft.priority,
+      subtitle: draft.due ? `Due ${formatDate(draft.due)} · ${draft.priority} priority` : `${draft.priority} priority`,
+      icon: CheckSquare2,
+    });
+    setDraft({ title: "", due: "", priority: "Medium" });
   }
 
   return (
     <section className="view-shell">
       <ViewHeader eyebrow="Tasks" title="Weekly action list" />
+      <div className="utility-stat-row">
+        {stats.map((item) => (
+          <article key={item.label}>
+            <strong>{item.value}</strong>
+            <span>{item.label}</span>
+          </article>
+        ))}
+      </div>
       <form className="task-form" onSubmit={submit}>
-        <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Add a new follow-up or application task" />
+        <input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} placeholder="Add a follow-up, prep block, or application task" />
+        <input type="date" value={draft.due} onChange={(event) => setDraft((current) => ({ ...current, due: event.target.value }))} aria-label="Task due date" />
+        <select value={draft.priority} onChange={(event) => setDraft((current) => ({ ...current, priority: event.target.value }))} aria-label="Task priority">
+          <option>High</option>
+          <option>Medium</option>
+          <option>Low</option>
+        </select>
         <button className="primary-button" type="submit">
           <Plus size={16} aria-hidden="true" />
           Add
         </button>
       </form>
+      <div className="task-filter-row" role="tablist" aria-label="Task filters">
+        {[
+          ["open", "Open"],
+          ["due", "Due soon"],
+          ["done", "Done"],
+          ["all", "All"],
+        ].map(([id, label]) => (
+          <button key={id} className={classNames(filter === id && "is-active")} type="button" onClick={() => setFilter(id)}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {suggestions.length > 0 && (
+        <div className="suggestion-strip">
+          {suggestions.map((suggestion) => {
+            const Icon = suggestion.icon;
+            return (
+              <button key={suggestion.id} type="button" onClick={() => onAddTask(suggestion)}>
+                <Icon size={15} aria-hidden="true" />
+                <span>
+                  <strong>{suggestion.title}</strong>
+                  <small>{suggestion.subtitle}</small>
+                </span>
+                <Plus size={14} aria-hidden="true" />
+              </button>
+            );
+          })}
+        </div>
+      )}
       {tasks.length === 0 && (
         <EmptyState icon={CheckSquare2} title="No tasks yet" text="Tasks appear only after you add them." />
       )}
       <div className="task-board-list">
-        {tasks.map((task) => {
+        {visibleTasks.map((task) => {
           const Icon = task.icon || CheckSquare2;
           return (
             <label key={task.id} className={classNames("task-item large-task", task.done && "is-done")}>
@@ -1937,7 +2217,10 @@ function TasksView({ tasks, onToggleTask, onAddTask }) {
               </span>
               <span>
                 <strong>{task.title}</strong>
-                <small>{task.subtitle}</small>
+                <small>{task.subtitle || task.priority || "Task"}</small>
+              </span>
+              <span className={classNames("date-chip", task.due && daysUntil(task.due) < 0 && !task.done && "is-overdue")}>
+                {task.due ? formatRelativeDate(task.due) : task.priority || "Task"}
               </span>
               <input checked={task.done} onChange={() => onToggleTask(task.id)} type="checkbox" aria-label={`Complete ${task.title}`} />
             </label>
@@ -2398,7 +2681,7 @@ function AnalyticsView({ jobs }) {
               </button>
             </div>
           </div>
-          <div className="sankey-scroll">
+          <div className={classNames("sankey-scroll", jobs.length === 0 && "is-empty")}>
             <JobSearchSankey jobs={jobs} svgRef={sankeyRef} />
           </div>
         </article>
@@ -2672,7 +2955,7 @@ export function App() {
     const query = search.trim().toLowerCase();
     return jobs.filter((job) => {
       const matchesSeason = season === "All" || job.season === season;
-      const searchBlob = `${job.company} ${job.role} ${job.location} ${job.tags.join(" ")} ${job.notes}`.toLowerCase();
+      const searchBlob = `${job.company} ${job.role} ${job.location} ${(job.tags || []).join(" ")} ${job.notes}`.toLowerCase();
       return matchesSeason && (!query || searchBlob.includes(query));
     });
   }, [jobs, search, season]);
@@ -2787,17 +3070,25 @@ export function App() {
     setTasks((current) => current.map((task) => (task.id === id ? { ...task, done: !task.done } : task)));
   }
 
-  function addTask(title) {
+  function addTask(taskInput) {
+    const payload =
+      typeof taskInput === "string"
+        ? { title: taskInput, subtitle: "Added manually" }
+        : taskInput;
     setTasks((current) => [
-      ...current,
       {
         id: `task-${Date.now()}`,
-        title,
-        subtitle: "Added manually",
-        icon: CheckSquare2,
+        title: payload.title,
+        subtitle: payload.subtitle || (payload.due ? `Due ${formatDate(payload.due)}` : "Added manually"),
+        icon: payload.icon || CheckSquare2,
         done: false,
+        due: payload.due || "",
+        priority: payload.priority || "Medium",
+        sourceJobId: payload.sourceJobId || "",
       },
+      ...current,
     ]);
+    setToast("Task added");
   }
 
   function addContact(contact) {
@@ -3000,9 +3291,34 @@ export function App() {
       );
     }
     if (activeView === "Companies") return <CompaniesView jobs={jobs} liveJobs={liveJobs} onSelectCompany={selectCompany} />;
-    if (activeView === "Contacts") return <ContactsView contacts={contacts} jobs={jobs} onAddContact={addContact} />;
-    if (activeView === "Calendar") return <CalendarView jobs={jobs} onSelectJob={(id) => { setSelectedId(id); setActiveView("Pipeline"); }} />;
-    if (activeView === "Tasks") return <TasksView tasks={tasks} onToggleTask={toggleTask} onAddTask={addTask} />;
+    if (activeView === "Contacts") {
+      return (
+        <ContactsView
+          contacts={contacts}
+          jobs={jobs}
+          onAddContact={addContact}
+          onCreateTask={addTask}
+          onSelectJob={(id) => {
+            setSelectedId(id);
+            setActiveView("Pipeline");
+          }}
+        />
+      );
+    }
+    if (activeView === "Calendar") {
+      return (
+        <CalendarView
+          jobs={jobs}
+          tasks={tasks}
+          onToggleTask={toggleTask}
+          onSelectJob={(id) => {
+            setSelectedId(id);
+            setActiveView("Pipeline");
+          }}
+        />
+      );
+    }
+    if (activeView === "Tasks") return <TasksView tasks={tasks} jobs={jobs} onToggleTask={toggleTask} onAddTask={addTask} />;
     if (activeView === "Documents") {
       return (
         <DocumentsView
