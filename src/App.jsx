@@ -191,6 +191,41 @@ function clearAuthToken() {
   window.localStorage.removeItem(AUTH_TOKEN_KEY);
 }
 
+function readInitialAuthToken() {
+  try {
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const redirectToken = hashParams.get("auth_token") || "";
+    if (!redirectToken) return readAuthToken();
+    saveAuthToken(redirectToken);
+    hashParams.delete("auth_token");
+    const nextHash = hashParams.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${window.location.search}${nextHash ? `#${nextHash}` : ""}`,
+    );
+    return redirectToken;
+  } catch {
+    return readAuthToken();
+  }
+}
+
+function readAuthRedirectMessage() {
+  try {
+    const errorCode = new URLSearchParams(window.location.search).get("auth_error");
+    const messages = {
+      google_csrf: "Google sign-in security check failed. Refresh and try again.",
+      google_missing_credential: "Google did not return a sign-in credential. Please try again.",
+      google_verify: "Google sign-in could not verify this account. Please try again.",
+      google_session: "Google sign-in connected, but the database session could not be created.",
+      google: "Google sign-in could not finish. Please try again.",
+    };
+    return messages[errorCode] || "";
+  } catch {
+    return "";
+  }
+}
+
 async function apiRequest(path, { method = "GET", body, token = readAuthToken() } = {}) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -981,7 +1016,7 @@ function AuthScreen({ onLogin, onRegister }) {
     password: "",
     avatar: profilePresets[0].src,
   });
-  const [error, setError] = useState("");
+  const [error, setError] = useState(readAuthRedirectMessage);
   const [loading, setLoading] = useState(false);
 
   const isRegister = mode === "register";
@@ -1659,7 +1694,7 @@ function SettingsView({
 
 export function App() {
   const [currentUser, setCurrentUser] = useState(null);
-  const [authToken, setAuthToken] = useState(readAuthToken);
+  const [authToken, setAuthToken] = useState(readInitialAuthToken);
   const [authReady, setAuthReady] = useState(false);
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [activeView, setActiveView] = useState("Dashboard");

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from html import unescape
@@ -387,6 +388,13 @@ def login_google_user(profile):
                 cur.execute("SELECT * FROM users WHERE id = %s LIMIT 1", (user_id,))
                 row = cur.fetchone()
     return {"user": public_user(row), "token": create_session(row["id"]), "workspace": get_workspace(row["id"])}
+
+
+def log_google_auth_issue(reason, error=None):
+    detail = f"google_auth_{reason}"
+    if error:
+        detail = f"{detail}: {type(error).__name__}: {error}"
+    print(detail, file=sys.stderr, flush=True)
 
 
 def decode_html(value=""):
@@ -774,15 +782,26 @@ def google_redirect():
     csrf_body = request.form.get("g_csrf_token", "")
     csrf_cookie = request.cookies.get("g_csrf_token", "")
     if (csrf_body or csrf_cookie) and csrf_body != csrf_cookie:
+        log_google_auth_issue("csrf_mismatch")
         return redirect("/?auth_error=google_csrf", code=303)
+    credential = str(request.form.get("credential", ""))
+    if not credential:
+        log_google_auth_issue("missing_credential")
+        return redirect("/?auth_error=google_missing_credential", code=303)
     try:
-        result = login_google_user(verify_google_credential(str(request.form.get("credential", ""))))
-        response = redirect("/", code=303)
-        secure = request.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
-        response.set_cookie("ct_session", result["token"], max_age=30 * 24 * 60 * 60, httponly=True, samesite="Lax", secure=secure, path="/")
-        return response
-    except Exception:
-        return redirect("/?auth_error=google", code=303)
+        profile = verify_google_credential(credential)
+    except Exception as error:
+        log_google_auth_issue("verify_failed", error)
+        return redirect("/?auth_error=google_verify", code=303)
+    try:
+        result = login_google_user(profile)
+    except Exception as error:
+        log_google_auth_issue("session_failed", error)
+        return redirect("/?auth_error=google_session", code=303)
+    response = redirect(f"/#auth_token={result['token']}", code=303)
+    secure = request.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    response.set_cookie("ct_session", result["token"], max_age=30 * 24 * 60 * 60, httponly=True, samesite="Lax", secure=secure, path="/")
+    return response
 
 
 @app.post("/api/auth/logout")
