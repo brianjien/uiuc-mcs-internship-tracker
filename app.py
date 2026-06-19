@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pymysql
 import requests
@@ -19,11 +20,34 @@ from google.oauth2 import id_token
 
 APP_ROOT = Path(__file__).resolve().parent
 DIST_DIR = APP_ROOT / "dist"
-MAX_BODY_BYTES = 1_000_000
+MAX_BODY_BYTES = 3_000_000
+MAX_TEXT_LENGTH = 2_000
+MAX_FIELD_LENGTH = 512
+MAX_NOTE_LENGTH = 8_000
+MAX_DATA_URL_BYTES = 720_000
 GOOGLE_CLIENT_ID = os.environ.get(
     "GOOGLE_CLIENT_ID",
     os.environ.get("VITE_GOOGLE_CLIENT_ID", "48292852686-95nqueviim5bflqo4upq3bta29bkamej.apps.googleusercontent.com"),
 )
+
+WORKSPACE_LIMITS = {"jobs": 500, "tasks": 500, "contacts": 500, "documents": 200}
+ALLOWED_STAGES = {"saved", "applied", "oa", "interview", "offer"}
+ALLOWED_MODES = {"Remote", "Hybrid", "On-site"}
+ALLOWED_PRIORITIES = {"High", "Medium", "Low"}
+ALLOWED_DOCUMENT_TYPES = {"Resume", "Cover Letter", "Portfolio", "Transcript", "Referral Note", "Template", "Other"}
+ALLOWED_DOCUMENT_STATUSES = {"Draft", "Needs Review", "Ready", "Submitted", "Archived"}
+SAFE_PROFILE_AVATAR_PREFIXES = ("/assets/profile-presets/",)
+SAFE_DATA_MIME_TYPES = {
+    "data:application/pdf",
+    "data:image/gif",
+    "data:image/jpeg",
+    "data:image/png",
+    "data:image/webp",
+    "data:text/csv",
+    "data:text/markdown",
+    "data:text/plain",
+    "data:application/json",
+}
 
 EMPTY_WORKSPACE = {
     "jobs": [],
@@ -36,6 +60,7 @@ EMPTY_WORKSPACE = {
 app = Flask(__name__, static_folder=None)
 schema_ready = False
 job_cache = {"created_at": 0, "payload": None}
+rate_limit_buckets = {}
 
 simplify_sources = [
     {
@@ -151,14 +176,227 @@ def parse_json(value, fallback):
         return fallback
 
 
-def normalize_workspace(value=None):
-    value = value or {}
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+HTML_TAG_RE = re.compile(r"<[^>]*>")
+EMAIL_RE = re.compile(r"^[^@\s<>]{1,64}@[^@\s<>]{1,180}\.[^@\s<>]{2,20}$")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+ID_RE = re.compile(r"[^a-zA-Z0-9_.:-]+")
+
+
+def clean_text(value="", limit=MAX_TEXT_LENGTH, fallback=""):
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return fallback
+    text = unescape(str(value))
+    text = CONTROL_CHAR_RE.sub(" ", text)
+    text = HTML_TAG_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return fallback
+    return text[:limit]
+
+
+def clean_identifier(value="", fallback=""):
+    text = clean_text(value, 128)
+    text = ID_RE.sub("-", text).strip("-")
+    return (text[:128] or fallback or f"item-{uuid.uuid4()}")
+
+
+def clean_email(value=""):
+    email = clean_text(value, 254).lower()
+    return email if EMAIL_RE.match(email) else ""
+
+
+def clean_date(value=""):
+    text = clean_text(value, 32)
+    return text if DATE_RE.match(text) else ""
+
+
+def clean_bool(value=False):
+    return value is True or str(value).lower() in {"true", "1", "yes", "on"}
+
+
+def clean_int(value=0, minimum=0, maximum=100, fallback=0):
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        number = fallback
+    return max(minimum, min(maximum, number))
+
+
+def is_safe_data_url(value=""):
+    raw = str(value or "").strip()
+    if not raw or len(raw) > MAX_DATA_URL_BYTES or "," not in raw:
+        return False
+    header = raw.split(",", 1)[0].lower()
+    mime = header.split(";", 1)[0]
+    if mime not in SAFE_DATA_MIME_TYPES:
+        return False
+    if ";base64" in header and not re.match(r"^[a-zA-Z0-9+/=\s]+$", raw.split(",", 1)[1]):
+        return False
+    return True
+
+
+def clean_url(value="", allow_data=False, allow_local=False):
+    raw = CONTROL_CHAR_RE.sub("", str(value or "").strip())
+    if not raw or len(raw) > 2048:
+        return ""
+    if allow_local and raw.startswith(SAFE_PROFILE_AVATAR_PREFIXES) and re.match(r"^/assets/profile-presets/[a-z0-9_.-]+\.(png|jpg|jpeg|webp|svg)$", raw, re.I):
+        return raw
+    if allow_data and is_safe_data_url(raw):
+        return raw
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+        return ""
+    return raw
+
+
+def clean_tags(value):
+    if not isinstance(value, list):
+        return []
+    tags = []
+    for item in value[:12]:
+        tag = clean_text(item, 48)
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def clean_profile(profile=None):
+    profile = profile if isinstance(profile, dict) else {}
+    avatar = clean_url(profile.get("avatar"), allow_local=True)
     return {
-        "jobs": value.get("jobs") if isinstance(value.get("jobs"), list) else [],
-        "tasks": value.get("tasks") if isinstance(value.get("tasks"), list) else [],
-        "contacts": value.get("contacts") if isinstance(value.get("contacts"), list) else [],
-        "documents": value.get("documents") if isinstance(value.get("documents"), list) else [],
-        "goal": value.get("goal") if isinstance(value.get("goal"), dict) else None,
+        "name": clean_text(profile.get("name"), 80, "Candidate") or "Candidate",
+        "program": clean_text(profile.get("program"), 80, "Career Profile") or "Career Profile",
+        "graduation": clean_text(profile.get("graduation"), 80, "2026-2027 cycle") or "2026-2027 cycle",
+        "visa": clean_text(profile.get("visa"), 80, "Internship + New Grad") or "Internship + New Grad",
+        "avatar": avatar or "/assets/profile-presets/avatar-portrait.png",
+    }
+
+
+def sanitize_job(job=None):
+    job = job if isinstance(job, dict) else {}
+    company = clean_text(job.get("company"), 120, "Unknown")
+    role = clean_text(job.get("role"), 160, "Internship")
+    location = clean_text(job.get("location"), 160, "Location not listed")
+    season = clean_text(job.get("season"), 60, "2026")
+    mode = clean_text(job.get("mode"), 40) or infer_mode(location)
+    if mode not in ALLOWED_MODES:
+        mode = infer_mode(location)
+    stage = clean_text(job.get("stage"), 24, "saved")
+    if stage not in ALLOWED_STAGES:
+        stage = "saved"
+    return {
+        "id": clean_identifier(job.get("id"), f"job-{uuid.uuid4()}"),
+        "company": company,
+        "role": role,
+        "season": season,
+        "deadline": clean_date(job.get("deadline")),
+        "location": location,
+        "mode": mode,
+        "sponsorship": clean_text(job.get("sponsorship"), 80, "Unknown"),
+        "stage": stage,
+        "match": clean_int(job.get("match"), 0, 100, 70),
+        "source": clean_text(job.get("source"), 100, "Manual"),
+        "sourceUrl": clean_url(job.get("sourceUrl")),
+        "posted": clean_text(job.get("posted"), 80),
+        "statusDate": clean_text(job.get("statusDate"), 80),
+        "priority": clean_bool(job.get("priority")),
+        "contact": clean_text(job.get("contact"), 120),
+        "contactRole": clean_text(job.get("contactRole"), 120),
+        "contactEmail": clean_email(job.get("contactEmail")),
+        "summary": clean_text(job.get("summary"), 700),
+        "description": clean_text(job.get("description"), 3_000),
+        "requirements": clean_text(job.get("requirements"), 1_200),
+        "notes": clean_text(job.get("notes"), MAX_NOTE_LENGTH),
+        "tags": clean_tags(job.get("tags")),
+        "nextStep": clean_text(job.get("nextStep"), 400),
+    }
+
+
+def sanitize_task(task=None):
+    task = task if isinstance(task, dict) else {}
+    priority = clean_text(task.get("priority"), 24, "Medium")
+    if priority not in ALLOWED_PRIORITIES:
+        priority = "Medium"
+    return {
+        "id": clean_identifier(task.get("id"), f"task-{uuid.uuid4()}"),
+        "title": clean_text(task.get("title"), 180, "Untitled task"),
+        "subtitle": clean_text(task.get("subtitle"), 220),
+        "done": clean_bool(task.get("done")),
+        "due": clean_date(task.get("due")),
+        "priority": priority,
+        "sourceJobId": clean_identifier(task.get("sourceJobId"), "") if task.get("sourceJobId") else "",
+    }
+
+
+def sanitize_contact(contact=None):
+    contact = contact if isinstance(contact, dict) else {}
+    return {
+        "id": clean_identifier(contact.get("id"), f"contact-{uuid.uuid4()}"),
+        "name": clean_text(contact.get("name"), 120, "Contact"),
+        "company": clean_text(contact.get("company"), 120),
+        "role": clean_text(contact.get("role"), 120),
+        "email": clean_email(contact.get("email")),
+        "next": clean_text(contact.get("next"), 300),
+        "source": clean_text(contact.get("source"), 60, "Manual"),
+        "sourceJobId": clean_identifier(contact.get("sourceJobId"), "") if contact.get("sourceJobId") else "",
+    }
+
+
+def sanitize_document(document=None):
+    document = document if isinstance(document, dict) else {}
+    document_type = clean_text(document.get("type"), 40, "Resume")
+    status = clean_text(document.get("status"), 40, "Draft")
+    if document_type not in ALLOWED_DOCUMENT_TYPES:
+        document_type = "Other"
+    if status not in ALLOWED_DOCUMENT_STATUSES:
+        status = "Draft"
+    file_type = clean_text(document.get("fileType"), 100)
+    file_data = clean_url(document.get("fileData"), allow_data=True)
+    if file_data and file_type.lower() == "image/svg+xml":
+        file_data = ""
+    return {
+        "id": clean_identifier(document.get("id"), f"document-{uuid.uuid4()}"),
+        "name": clean_text(document.get("name"), 160, "Untitled document"),
+        "type": document_type,
+        "status": status,
+        "target": clean_text(document.get("target"), 140, "General"),
+        "url": clean_url(document.get("url")),
+        "version": clean_text(document.get("version"), 40, "v1"),
+        "owner": clean_text(document.get("owner"), 120),
+        "notes": clean_text(document.get("notes"), 1_500),
+        "fileName": clean_text(document.get("fileName"), 180),
+        "fileType": file_type,
+        "fileSize": clean_int(document.get("fileSize"), 0, MAX_DATA_URL_BYTES, 0),
+        "fileData": file_data,
+        "updated": clean_text(document.get("updated"), 80),
+    }
+
+
+def sanitize_goal(goal=None):
+    if not isinstance(goal, dict):
+        return None
+    return {
+        "target": clean_int(goal.get("target"), 0, 5000, 0),
+        "deadline": clean_date(goal.get("deadline")),
+        "label": clean_text(goal.get("label"), 80),
+    }
+
+
+def normalize_workspace(value=None):
+    value = value if isinstance(value, dict) else {}
+    return {
+        "jobs": [sanitize_job(item) for item in (value.get("jobs") if isinstance(value.get("jobs"), list) else [])[: WORKSPACE_LIMITS["jobs"]]],
+        "tasks": [sanitize_task(item) for item in (value.get("tasks") if isinstance(value.get("tasks"), list) else [])[: WORKSPACE_LIMITS["tasks"]]],
+        "contacts": [sanitize_contact(item) for item in (value.get("contacts") if isinstance(value.get("contacts"), list) else [])[: WORKSPACE_LIMITS["contacts"]]],
+        "documents": [
+            sanitize_document(item)
+            for item in (value.get("documents") if isinstance(value.get("documents"), list) else [])[: WORKSPACE_LIMITS["documents"]]
+        ],
+        "goal": sanitize_goal(value.get("goal")) if isinstance(value.get("goal"), dict) else None,
     }
 
 
@@ -166,7 +404,7 @@ def public_user(row):
     return {
         "id": row["id"],
         "email": row["email"],
-        "profile": parse_json(row.get("profile_json"), {}),
+        "profile": clean_profile(parse_json(row.get("profile_json"), {})),
         "createdAt": str(row.get("created_at")),
         "updatedAt": str(row.get("updated_at")),
     }
@@ -309,18 +547,17 @@ def require_user():
 
 
 def clean_auth_body(body):
-    body = body or {}
+    body = body if isinstance(body, dict) else {}
     profile = body.get("profile") if isinstance(body.get("profile"), dict) else {}
+    merged_profile = {
+        **profile,
+        "name": body.get("name") or profile.get("name"),
+        "avatar": body.get("avatar") or profile.get("avatar"),
+    }
     return {
-        "email": str(body.get("email") or "").strip().lower(),
-        "password": str(body.get("password") or ""),
-        "profile": {
-            "name": str(body.get("name") or profile.get("name") or "Candidate").strip(),
-            "avatar": body.get("avatar") or profile.get("avatar"),
-            "program": profile.get("program"),
-            "graduation": profile.get("graduation"),
-            "visa": profile.get("visa"),
-        },
+        "email": clean_email(body.get("email")),
+        "password": str(body.get("password") or "")[:1024],
+        "profile": clean_profile(merged_profile),
     }
 
 
@@ -375,20 +612,24 @@ def verify_google_credential(credential):
 
 def login_google_user(profile):
     ensure_schema()
-    normalized_email = str(profile.get("email") or "").strip().lower()
+    normalized_email = clean_email(profile.get("email"))
+    if not normalized_email:
+        raise ValueError("Google profile email is invalid.")
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM users WHERE email = %s LIMIT 1", (normalized_email,))
             row = cur.fetchone()
             if not row:
                 user_id = str(uuid.uuid4())
-                next_profile = {
-                    "name": profile.get("name") or "Candidate",
-                    "program": "Career Profile",
-                    "graduation": "2026-2027 cycle",
-                    "visa": "Internship + New Grad",
-                    "avatar": profile.get("picture") or "/assets/profile-presets/avatar-portrait.png",
-                }
+                next_profile = clean_profile(
+                    {
+                        "name": profile.get("name") or "Candidate",
+                        "program": "Career Profile",
+                        "graduation": "2026-2027 cycle",
+                        "visa": "Internship + New Grad",
+                        "avatar": profile.get("picture") or "/assets/profile-presets/avatar-portrait.png",
+                    }
+                )
                 cur.execute(
                     "INSERT INTO users (id, email, password_hash, profile_json) VALUES (%s, %s, %s, %s)",
                     (user_id, normalized_email, f"google:{secrets.token_hex(24)}", json.dumps(next_profile)),
@@ -406,14 +647,14 @@ def log_google_auth_issue(reason, error=None):
     print(detail, file=sys.stderr, flush=True)
 
 
-def auth_complete_html():
+def auth_complete_html(nonce=""):
     return """<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Completing sign in</title>
-    <style>
+    <style nonce="__NONCE__">
       body {
         align-items: center;
         background: #eef8f1;
@@ -434,7 +675,7 @@ def auth_complete_html():
       <strong>Career Tracker</strong>
       <h1>Completing sign in</h1>
     </main>
-    <script>
+    <script nonce="__NONCE__">
       (function () {
         try {
           var params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -452,7 +693,7 @@ def auth_complete_html():
       })();
     </script>
   </body>
-</html>"""
+</html>""".replace("__NONCE__", nonce)
 
 
 def decode_html(value=""):
@@ -470,10 +711,12 @@ def clean_company(value=""):
 
 def first_url(value=""):
     matches = re.findall(r'href="([^"]+)"', str(value))
-    for url in matches:
+    safe_matches = [clean_url(url) for url in matches]
+    safe_matches = [url for url in safe_matches if url]
+    for url in safe_matches:
         if "simplify.jobs/p/" not in url:
             return url
-    return matches[0] if matches else ""
+    return safe_matches[0] if safe_matches else ""
 
 
 def slugify(value=""):
@@ -549,8 +792,8 @@ def normalize_job(job):
         "tags": job.get("tags") or ["Live"],
         "nextStep": "Open the posting, verify fit, and decide whether to apply.",
     }
-    normalized["match"] = job.get("match") or calculate_match(normalized)
-    return normalized
+    normalized["match"] = clean_int(job.get("match") or calculate_match(normalized), 0, 100, 70)
+    return sanitize_job(normalized)
 
 
 def parse_simplify_markdown(markdown, source):
@@ -733,9 +976,9 @@ def dedupe_jobs(jobs):
 
 
 def filter_jobs(jobs, params):
-    query = (params.get("query") or "").strip().lower()
-    season = params.get("season") or "all"
-    remote = params.get("remote") or "all"
+    query = clean_text(params.get("query"), 120).lower()
+    season = clean_text(params.get("season"), 40, "all") or "all"
+    remote = clean_text(params.get("remote"), 40, "all") or "all"
     filtered = []
     for job in jobs:
         blob = f"{job['company']} {job['role']} {job['location']} {job['season']} {' '.join(job['tags'])}".lower()
@@ -787,8 +1030,121 @@ def get_live_jobs(params):
         }
     payload = job_cache["payload"]
     filtered = filter_jobs(payload["jobs"], params)
-    limit = max(1, min(800, int(params.get("limit") or 120)))
+    try:
+        requested_limit = int(params.get("limit") or 120)
+    except (TypeError, ValueError):
+        requested_limit = 120
+    limit = max(1, min(800, requested_limit))
     return {**payload, "total": len(payload["jobs"]), "filteredTotal": len(filtered), "count": len(filtered[:limit]), "jobs": filtered[:limit]}
+
+
+
+def client_ip():
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    return forwarded or request.remote_addr or "unknown"
+
+
+def rate_limit_key():
+    if request.path.startswith("/api/auth/"):
+        return "auth", 30, 60
+    if request.path == "/api/jobs":
+        return "jobs", 90, 60
+    if request.path in {"/api/workspace", "/api/profile"}:
+        return "workspace", 180, 60
+    return "api", 300, 60
+
+
+def check_rate_limit():
+    bucket_name, limit, window_seconds = rate_limit_key()
+    now = datetime.now(timezone.utc).timestamp()
+    key = (bucket_name, client_ip())
+    bucket = [stamp for stamp in rate_limit_buckets.get(key, []) if now - stamp < window_seconds]
+    if len(bucket) >= limit:
+        rate_limit_buckets[key] = bucket
+        return False
+    bucket.append(now)
+    rate_limit_buckets[key] = bucket
+    if len(rate_limit_buckets) > 5_000:
+        stale_before = now - (window_seconds * 2)
+        for stale_key, stamps in list(rate_limit_buckets.items()):
+            fresh = [stamp for stamp in stamps if stamp >= stale_before]
+            if fresh:
+                rate_limit_buckets[stale_key] = fresh
+            else:
+                rate_limit_buckets.pop(stale_key, None)
+    return True
+
+
+def same_origin_request():
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    allowed_hosts = {
+        request.host,
+        request.headers.get("x-forwarded-host", ""),
+    }
+    allowed_hosts = {host for host in allowed_hosts if host}
+    for value in (origin, referer):
+        if not value:
+            continue
+        try:
+            parsed = urlparse(value)
+        except Exception:
+            return False
+        if parsed.scheme not in {"http", "https"} or parsed.netloc not in allowed_hosts:
+            return False
+    return True
+
+
+JSON_BODY_PATHS = {"/api/auth/register", "/api/auth/login", "/api/auth/google", "/api/profile", "/api/workspace"}
+
+
+@app.before_request
+def guard_request():
+    if request.content_length and request.content_length > MAX_BODY_BYTES:
+        return json_response({"error": "Request body is too large."}, 413)
+    if not request.path.startswith("/api/"):
+        return None
+    if not check_rate_limit():
+        return json_response({"error": "Too many requests. Please wait and try again."}, 429)
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.path != "/api/auth/google/redirect":
+        if not same_origin_request():
+            return json_response({"error": "Cross-site request rejected."}, 403)
+    if request.method in {"POST", "PUT", "PATCH"} and request.path in JSON_BODY_PATHS and not request.is_json:
+        return json_response({"error": "Expected application/json."}, 415)
+    return None
+
+
+def build_csp(script_nonce=""):
+    script_sources = ["'self'", "https://accounts.google.com", "https://accounts.gstatic.com"]
+    if script_nonce:
+        script_sources.append(f"'nonce-{script_nonce}'")
+    directives = {
+        "default-src": ["'self'"],
+        "base-uri": ["'self'"],
+        "connect-src": ["'self'", "https://accounts.google.com", "https://*.google.com"],
+        "font-src": ["'self'", "data:"],
+        "form-action": ["'self'", "https://accounts.google.com"],
+        "frame-ancestors": ["'none'"],
+        "frame-src": ["'self'", "https://accounts.google.com", "https://*.google.com", "https://drive.google.com", "https://docs.google.com", "data:"],
+        "img-src": ["'self'", "data:", "https:"],
+        "media-src": ["'self'", "data:"],
+        "object-src": ["'none'"],
+        "script-src": script_sources,
+        "style-src": ["'self'", "'unsafe-inline'"],
+    }
+    return "; ".join(f"{name} {' '.join(values)}" for name, values in directives.items())
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("Content-Security-Policy", build_csp())
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    if request.path.startswith("/api/") or request.path == "/auth/complete":
+        response.headers["cache-control"] = "no-store"
+    return response
 
 
 @app.get("/api/health")
@@ -813,7 +1169,10 @@ def jobs():
 
 @app.post("/api/auth/register")
 def register():
-    draft = clean_auth_body(request.get_json(silent=True) or {})
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return json_response({"error": "Invalid JSON body."}, 400)
+    draft = clean_auth_body(body)
     if not draft["email"] or not draft["password"]:
         return json_response({"error": "Email and password are required."}, 400)
     if len(draft["password"]) < 8:
@@ -824,7 +1183,10 @@ def register():
 
 @app.post("/api/auth/login")
 def login():
-    draft = clean_auth_body(request.get_json(silent=True) or {})
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return json_response({"error": "Invalid JSON body."}, 400)
+    draft = clean_auth_body(body)
     if not draft["email"] or not draft["password"]:
         return json_response({"error": "Email and password are required."}, 400)
     result = login_user(draft)
@@ -834,6 +1196,8 @@ def login():
 @app.post("/api/auth/google")
 def google_login():
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return json_response({"error": "Invalid JSON body."}, 400)
     if not body.get("credential"):
         return json_response({"error": "Missing Google credential."}, 400)
     try:
@@ -873,9 +1237,11 @@ def google_redirect():
 
 @app.get("/auth/complete")
 def auth_complete():
-    response = make_response(auth_complete_html(), 200)
+    nonce = secrets.token_urlsafe(16)
+    response = make_response(auth_complete_html(nonce), 200)
     response.headers["cache-control"] = "no-store"
     response.headers["content-type"] = "text/html; charset=utf-8"
+    response.headers["Content-Security-Policy"] = build_csp(script_nonce=nonce)
     return response
 
 
@@ -904,7 +1270,10 @@ def profile():
     if error:
         return error
     body = request.get_json(silent=True) or {}
-    next_profile = {**user.get("profile", {}), **(body.get("profile") if isinstance(body.get("profile"), dict) else body)}
+    if not isinstance(body, dict):
+        return json_response({"error": "Invalid JSON body."}, 400)
+    submitted_profile = body.get("profile") if isinstance(body.get("profile"), dict) else body
+    next_profile = clean_profile({**user.get("profile", {}), **submitted_profile})
     ensure_schema()
     with db() as conn:
         with conn.cursor() as cur:
@@ -928,7 +1297,10 @@ def workspace_put():
     if error:
         return error
     body = request.get_json(silent=True) or {}
-    return json_response({"workspace": save_workspace(user["id"], body.get("workspace") or body)})
+    if not isinstance(body, dict):
+        return json_response({"error": "Invalid JSON body."}, 400)
+    submitted_workspace = body.get("workspace") if isinstance(body.get("workspace"), dict) else body
+    return json_response({"workspace": save_workspace(user["id"], submitted_workspace)})
 
 
 @app.route("/", defaults={"path": ""})

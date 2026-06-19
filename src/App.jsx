@@ -238,13 +238,25 @@ function formatBytes(value = 0) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function safeExternalUrl(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 2048) return "";
+  try {
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return "";
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
 function isOpenableUrl(value = "") {
-  return /^https?:\/\//i.test(String(value).trim());
+  return Boolean(safeExternalUrl(value));
 }
 
 function getEmbeddableDocumentUrl(value = "") {
-  const rawUrl = String(value || "").trim();
-  if (!isOpenableUrl(rawUrl)) return "";
+  const rawUrl = safeExternalUrl(value);
+  if (!rawUrl) return "";
   try {
     const parsed = new URL(rawUrl);
     const host = parsed.hostname.replace(/^www\./, "");
@@ -266,10 +278,12 @@ function getEmbeddableDocumentUrl(value = "") {
 function getDocumentPreviewMode(document = {}) {
   const fileType = String(document.fileType || "").toLowerCase();
   const fileName = String(document.fileName || "").toLowerCase();
+  const safeTextPreview =
+    ["text/plain", "text/csv", "text/markdown", "application/json"].includes(fileType) || /\.(csv|json|md|txt)$/i.test(fileName);
   if (document.fileData) {
-    if (fileType.startsWith("image/")) return "image";
+    if (fileType.startsWith("image/") && fileType !== "image/svg+xml") return "image";
     if (fileType === "application/pdf" || fileName.endsWith(".pdf")) return "frame";
-    if (fileType.startsWith("text/") || /\.(csv|json|md|txt)$/i.test(fileName)) return "frame";
+    if (safeTextPreview) return "frame";
     return "unsupported-file";
   }
   if (isOpenableUrl(document.url)) return "link";
@@ -640,7 +654,8 @@ function DocumentPreviewPanel({ document }) {
           className="document-preview-frame"
           src={source}
           title={`${document.name} preview`}
-          referrerPolicy="no-referrer-when-downgrade"
+          referrerPolicy="no-referrer"
+          sandbox="allow-scripts allow-same-origin allow-popups"
         />
         {mode === "link" && (
           <p className="document-preview-note">
@@ -705,7 +720,8 @@ function OpportunityPreviewModal({ job, imported, onClose, onImport }) {
   const requirementItems = getOpportunityRequirementItems(job);
   const signals = getOpportunitySignals(job);
   const description = String(job.description || job.summary || "").trim();
-  const hasSource = isOpenableUrl(job.sourceUrl);
+  const sourceUrl = safeExternalUrl(job.sourceUrl);
+  const hasSource = Boolean(sourceUrl);
 
   return (
     <div
@@ -726,7 +742,7 @@ function OpportunityPreviewModal({ job, imported, onClose, onImport }) {
           </span>
           <div className="opportunity-preview-actions">
             {hasSource ? (
-              <a className="secondary-button" href={job.sourceUrl} target="_blank" rel="noreferrer">
+              <a className="secondary-button" href={sourceUrl} target="_blank" rel="noreferrer">
                 Apply <ArrowUpRight size={14} aria-hidden="true" />
               </a>
             ) : (
@@ -1240,6 +1256,8 @@ function DetailPanel({ job, onClose, onStageChange, onUpdateNotes, onCompleteNex
 
   if (!job) return null;
 
+  const sourceUrl = safeExternalUrl(job.sourceUrl);
+
   return (
     <section className="detail-panel" aria-label={`${job.company} details`}>
       <div className="detail-top">
@@ -1267,21 +1285,21 @@ function DetailPanel({ job, onClose, onStageChange, onUpdateNotes, onCompleteNex
 
       <div className="detail-links" aria-label="Job source links">
         <a
-          href={job.sourceUrl || "#"}
-          target={job.sourceUrl ? "_blank" : undefined}
-          rel={job.sourceUrl ? "noreferrer" : undefined}
+          href={sourceUrl || "#"}
+          target={sourceUrl ? "_blank" : undefined}
+          rel={sourceUrl ? "noreferrer" : undefined}
           onClick={(event) => {
-            if (!job.sourceUrl) event.preventDefault();
+            if (!sourceUrl) event.preventDefault();
           }}
         >
           {job.source} <ArrowUpRight size={13} aria-hidden="true" />
         </a>
         <a
-          href={job.sourceUrl || "#"}
-          target={job.sourceUrl ? "_blank" : undefined}
-          rel={job.sourceUrl ? "noreferrer" : undefined}
+          href={sourceUrl || "#"}
+          target={sourceUrl ? "_blank" : undefined}
+          rel={sourceUrl ? "noreferrer" : undefined}
           onClick={(event) => {
-            if (!job.sourceUrl) event.preventDefault();
+            if (!sourceUrl) event.preventDefault();
           }}
         >
           Job Posting <ArrowUpRight size={13} aria-hidden="true" />
@@ -1439,7 +1457,7 @@ function AddJobModal({ open, defaultStage, onClose, onAdd }) {
       stage: form.stage,
       match: 76,
       source: "Manual",
-      sourceUrl: form.sourceUrl.trim(),
+      sourceUrl: safeExternalUrl(form.sourceUrl),
       posted: new Date().toISOString().slice(0, 10),
       statusDate: "Added today",
       priority: false,
@@ -1873,7 +1891,8 @@ function LiveSearchView({
       <div className="opportunity-list">
         {liveJobs.map((job) => {
           const imported = importedIds.has(job.id);
-          const hasSource = isOpenableUrl(job.sourceUrl);
+          const sourceUrl = safeExternalUrl(job.sourceUrl);
+          const hasSource = Boolean(sourceUrl);
           return (
             <article key={job.id} className="opportunity-row">
               <CompanyLogo company={job.company} />
@@ -1903,7 +1922,7 @@ function LiveSearchView({
                   Preview
                 </button>
                 {hasSource ? (
-                  <a className="secondary-button" href={job.sourceUrl} target="_blank" rel="noreferrer">
+                  <a className="secondary-button" href={sourceUrl} target="_blank" rel="noreferrer">
                     Apply <ArrowUpRight size={14} aria-hidden="true" />
                   </a>
                 ) : (
@@ -2579,7 +2598,7 @@ function DocumentsView({
       ...draft,
       id: editingId || `document-${Date.now()}`,
       name: draft.name.trim(),
-      url: draft.url.trim(),
+      url: safeExternalUrl(draft.url),
       target: draft.target.trim() || "General",
       owner: draft.owner.trim(),
       notes: draft.notes.trim(),
@@ -2596,9 +2615,10 @@ function DocumentsView({
   }
 
   async function copyLink(document) {
-    if (!document.url) return;
+    const link = safeExternalUrl(document.url);
+    if (!link) return;
     try {
-      await navigator.clipboard.writeText(document.url);
+      await navigator.clipboard.writeText(link);
       onToast(`${document.name} link copied`);
     } catch {
       onToast("Link could not be copied");
@@ -2736,7 +2756,8 @@ function DocumentsView({
           )}
           <div className="document-grid">
             {filteredDocuments.map((doc) => {
-              const canOpenLink = isOpenableUrl(doc.url);
+              const documentUrl = safeExternalUrl(doc.url);
+              const canOpenLink = Boolean(documentUrl);
               const canPreview = Boolean(doc.fileData || canOpenLink);
               return (
                 <article key={doc.id} className="document-card">
@@ -2784,7 +2805,7 @@ function DocumentsView({
                       Preview
                     </button>
                     {canOpenLink ? (
-                      <a className="secondary-button" href={doc.url} target="_blank" rel="noreferrer">
+                      <a className="secondary-button" href={documentUrl} target="_blank" rel="noreferrer">
                         Open <ArrowUpRight size={14} aria-hidden="true" />
                       </a>
                     ) : doc.fileData ? (
@@ -2799,7 +2820,7 @@ function DocumentsView({
                     <button className="secondary-button" type="button" onClick={() => editDocument(doc)} aria-label={`Edit ${doc.name}`}>
                       <Pencil size={14} aria-hidden="true" />
                     </button>
-                    <button className="secondary-button" type="button" onClick={() => copyLink(doc)} disabled={!doc.url} aria-label={`Copy ${doc.name} link`}>
+                    <button className="secondary-button" type="button" onClick={() => copyLink(doc)} disabled={!documentUrl} aria-label={`Copy ${doc.name} link`}>
                       <Copy size={14} aria-hidden="true" />
                     </button>
                     <button className="secondary-button" type="button" onClick={() => onDuplicateDocument(doc.id)} aria-label={`Duplicate ${doc.name}`}>
@@ -2845,7 +2866,7 @@ function DocumentsView({
                   </a>
                 )}
                 {isOpenableUrl(previewDocument.url) && (
-                  <a className="secondary-button" href={previewDocument.url} target="_blank" rel="noreferrer">
+                  <a className="secondary-button" href={safeExternalUrl(previewDocument.url)} target="_blank" rel="noreferrer">
                     <ExternalLink size={14} aria-hidden="true" />
                     Open Source
                   </a>
