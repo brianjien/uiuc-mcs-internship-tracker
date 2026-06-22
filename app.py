@@ -6,7 +6,9 @@ import os
 import re
 import secrets
 import sys
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
@@ -85,6 +87,13 @@ schema_ready = False
 job_cache = {"created_at": 0, "payload": None}
 rate_limit_buckets = {}
 
+EARLY_CAREER_PATTERN = re.compile(
+    r"\b(intern|internship|co[- ]?op|university|student|new grad|new college grad|graduate|entry[- ]?level|early career)\b",
+    re.I,
+)
+TECH_ROLE_PATTERN = re.compile(r"\b(software|engineer|developer|machine learning|ml|ai|data|security|systems|platform|backend|frontend|fullstack)\b", re.I)
+LIVE_INDEX_LIMIT = 3_000
+
 simplify_sources = [
     {
         "id": "simplify-off-season",
@@ -109,7 +118,117 @@ simplify_sources = [
     },
 ]
 
-greenhouse_boards = ["anthropic", "coinbase", "databricks", "figma", "rubrik", "scaleai", "stripe"]
+markdown_table_sources = [
+    {
+        "id": "speedy-swe-us-intern",
+        "name": "SpeedyApply SWE Internships",
+        "url": "https://raw.githubusercontent.com/speedyapply/2026-SWE-College-Jobs/main/README.md",
+        "season": "2026 Fall",
+        "roleType": "Internship",
+        "format": "speedy",
+    },
+    {
+        "id": "speedy-swe-intl-intern",
+        "name": "SpeedyApply SWE International Internships",
+        "url": "https://raw.githubusercontent.com/speedyapply/2026-SWE-College-Jobs/main/INTERN_INTL.md",
+        "season": "2026",
+        "roleType": "Internship",
+        "format": "speedy",
+    },
+    {
+        "id": "speedy-ai-us-intern",
+        "name": "SpeedyApply AI Internships",
+        "url": "https://raw.githubusercontent.com/speedyapply/2026-AI-College-Jobs/main/README.md",
+        "season": "2026 Fall",
+        "roleType": "Internship",
+        "format": "speedy",
+    },
+    {
+        "id": "speedy-ai-intl-intern",
+        "name": "SpeedyApply AI International Internships",
+        "url": "https://raw.githubusercontent.com/speedyapply/2026-AI-College-Jobs/main/INTERN_INTL.md",
+        "season": "2026",
+        "roleType": "Internship",
+        "format": "speedy",
+    },
+    {
+        "id": "speedy-swe-us-new-grad",
+        "name": "SpeedyApply SWE New Grad",
+        "url": "https://raw.githubusercontent.com/speedyapply/2026-SWE-College-Jobs/main/NEW_GRAD_USA.md",
+        "season": "New Grad",
+        "roleType": "New Grad",
+        "format": "speedy",
+    },
+    {
+        "id": "speedy-ai-us-new-grad",
+        "name": "SpeedyApply AI New Grad",
+        "url": "https://raw.githubusercontent.com/speedyapply/2026-AI-College-Jobs/main/NEW_GRAD_USA.md",
+        "season": "New Grad",
+        "roleType": "New Grad",
+        "format": "speedy",
+    },
+    {
+        "id": "vansh-summer",
+        "name": "Vansh Summer Internships",
+        "url": "https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/dev/README.md",
+        "season": "2026 Summer",
+        "roleType": "Internship",
+        "format": "vansh",
+    },
+    {
+        "id": "vansh-offseason",
+        "name": "Vansh Off-Season Internships",
+        "url": "https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/dev/OFFSEASON_README.md",
+        "season": "2026 Fall",
+        "roleType": "Internship",
+        "format": "vansh",
+    },
+    {
+        "id": "vansh-new-grad",
+        "name": "Vansh New Grad",
+        "url": "https://raw.githubusercontent.com/vanshb03/New-Grad-2027/main/README.md",
+        "season": "New Grad",
+        "roleType": "New Grad",
+        "format": "vansh",
+    },
+    {
+        "id": "jobright-engineering-intern",
+        "name": "Jobright Engineering Internships",
+        "url": "https://raw.githubusercontent.com/jobright-ai/2026-Engineer-Internship/master/README.md",
+        "season": "2026",
+        "roleType": "Internship",
+        "format": "jobright",
+    },
+    {
+        "id": "jobright-swe-new-grad",
+        "name": "Jobright SWE New Grad",
+        "url": "https://raw.githubusercontent.com/jobright-ai/2026-Software-Engineer-New-Grad/master/README.md",
+        "season": "New Grad",
+        "roleType": "New Grad",
+        "format": "jobright",
+    },
+]
+
+greenhouse_boards = [
+    "andurilindustries",
+    "verkada",
+    "mongodb",
+    "stripe",
+    "rubrik",
+    "nuro",
+    "pinterest",
+    "databricks",
+    "scaleai",
+    "roblox",
+    "brex",
+    "waymo",
+    "affirm",
+    "airbnb",
+    "anthropic",
+    "coinbase",
+    "figma",
+]
+lever_boards = ["palantir"]
 remoteok_url = "https://remoteok.com/api"
 remotive_url = "https://remotive.com/api/remote-jobs?search=software%20engineer"
 
@@ -865,16 +984,24 @@ def strip_tags(value=""):
     return decode_html(re.sub(r"<[^>]*>", " ", str(value)))
 
 
+def strip_rich_text(value=""):
+    text = re.sub(r"!\[[^\]]*]\([^)]+\)", " ", str(value))
+    text = re.sub(r"\[([^\]]+)]\([^)]+\)", r"\1", text)
+    text = re.sub(r"[*_`]+", "", text)
+    return strip_tags(text)
+
+
 def clean_company(value=""):
-    return re.sub("[\U0001f525\U0001f512\U0001f393\U0001f6c2\U0001f1fa\U0001f1f8]", "", strip_tags(value)).replace("\u21b3", "").strip()
+    return re.sub("[\U0001f525\U0001f512\U0001f393\U0001f6c2\U0001f1fa\U0001f1f8]", "", strip_rich_text(value)).replace("\u21b3", "").strip()
 
 
 def first_url(value=""):
     matches = re.findall(r'href="([^"]+)"', str(value))
+    matches.extend(re.findall(r"\]\((https?://[^)\s]+)\)", str(value)))
     safe_matches = [clean_url(url) for url in matches]
     safe_matches = [url for url in safe_matches if url]
     for url in safe_matches:
-        if "simplify.jobs/p/" not in url:
+        if "simplify.jobs/p/" not in url and "i.imgur.com" not in url:
             return url
     return safe_matches[0] if safe_matches else ""
 
@@ -971,11 +1098,11 @@ def parse_simplify_markdown(markdown, source):
         if company:
             last_company = company
 
-        role = strip_tags(cells[1])
-        location = strip_tags(cells[2])
-        terms = strip_tags(cells[3]) if has_terms else ""
+        role = strip_rich_text(cells[1])
+        location = strip_rich_text(cells[2])
+        terms = strip_rich_text(cells[3]) if has_terms else ""
         application_cell = cells[4] if has_terms else cells[3]
-        age = strip_tags(cells[5] if has_terms else cells[4])
+        age = strip_rich_text(cells[5] if has_terms else cells[4])
         source_url = first_url(application_cell)
 
         if not role or not last_company or "\U0001f512" in row:
@@ -1006,26 +1133,130 @@ def parse_simplify_markdown(markdown, source):
     return jobs
 
 
+def is_markdown_separator(cells):
+    return bool(cells) and all(re.fullmatch(r":?-{2,}:?", cell.strip()) for cell in cells if cell.strip())
+
+
+def parse_markdown_table(markdown, source):
+    jobs = []
+    last_company = ""
+    source_format = source.get("format", "generic")
+    role_type = source.get("roleType") or "Internship"
+
+    for line in str(markdown).splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 5 or is_markdown_separator(cells):
+            continue
+        header_blob = " ".join(cells[:5]).lower()
+        if "company" in header_blob and ("position" in header_blob or "role" in header_blob or "job title" in header_blob):
+            continue
+
+        if source_format == "speedy":
+            company_cell, role_cell, location_cell = cells[0], cells[1], cells[2]
+            if len(cells) >= 6:
+                salary, application_cell, posted = strip_rich_text(cells[3]), cells[4], strip_rich_text(cells[5])
+            else:
+                salary, application_cell, posted = "", cells[3], strip_rich_text(cells[4])
+        elif source_format == "jobright":
+            company_cell, role_cell, location_cell = cells[0], cells[1], cells[2]
+            salary, application_cell, posted = "", cells[1], strip_rich_text(cells[4])
+        else:
+            company_cell, role_cell, location_cell = cells[0], cells[1], cells[2]
+            salary, application_cell, posted = "", cells[3], strip_rich_text(cells[4])
+
+        company = clean_company(company_cell)
+        if company and company not in {"-", "----", "-------"}:
+            last_company = company
+        if not last_company:
+            continue
+
+        role = strip_rich_text(role_cell)
+        location = strip_rich_text(location_cell)
+        if not role or not location or role in {"Role", "Position", "Job Title"}:
+            continue
+        if "\U0001f512" in line:
+            continue
+
+        inferred_season = infer_season(role, "", source.get("season", "2026"))
+        inferred_role_type = "New Grad" if role_type == "New Grad" or inferred_season == "New Grad" else "Internship"
+        source_url = first_url(application_cell or role_cell)
+        tags = [inferred_season, inferred_role_type, source.get("name")]
+        if salary:
+            tags.append(salary)
+
+        jobs.append(
+            normalize_job(
+                {
+                    "id": f"{source['id']}-{slugify(last_company)}-{slugify(role)}-{slugify(location)}",
+                    "company": last_company,
+                    "role": role,
+                    "location": location,
+                    "season": inferred_season,
+                    "mode": infer_mode(location),
+                    "sponsorship": "No sponsorship" if "\U0001f6c2" in line else "US citizenship likely" if "\U0001f1fa\U0001f1f8" in line else "Unknown",
+                    "posted": posted or "Recently",
+                    "deadline": "",
+                    "source": source["name"],
+                    "sourceUrl": source_url,
+                    "tags": [item for item in tags if item],
+                    "summary": f"{role} at {last_company}. Listed by {source['name']}{f' with {salary}' if salary else ''}.",
+                    "requirements": salary,
+                }
+            )
+        )
+    return jobs
+
+
 def fetch_text(url):
-    response = requests.get(
-        url,
-        headers={"User-Agent": "Career-Tracker-Dashboard/1.0", "Accept": "text/plain, text/html, application/json"},
-        timeout=10,
-    )
-    response.raise_for_status()
-    return response.text
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                url,
+                headers={"User-Agent": "Career-Tracker-Dashboard/1.0", "Accept": "text/plain, text/html, application/json"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            return response.text
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.25)
+    raise last_error
 
 
 def fetch_json(url):
-    response = requests.get(url, headers={"User-Agent": "Career-Tracker-Dashboard/1.0", "Accept": "application/json"}, timeout=10)
-    response.raise_for_status()
-    return response.json()
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = requests.get(url, headers={"User-Agent": "Career-Tracker-Dashboard/1.0", "Accept": "application/json"}, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.25)
+    raise last_error
 
 
 def fetch_simplify():
     jobs = []
-    for source in simplify_sources:
-        jobs.extend(parse_simplify_markdown(fetch_text(source["url"]), source))
+    with ThreadPoolExecutor(max_workers=min(6, len(simplify_sources))) as executor:
+        futures = [executor.submit(lambda item: parse_simplify_markdown(fetch_text(item["url"]), item), source) for source in simplify_sources]
+        for future in as_completed(futures):
+            jobs.extend(future.result())
+    return jobs
+
+
+def fetch_markdown_tables():
+    jobs = []
+    with ThreadPoolExecutor(max_workers=min(10, len(markdown_table_sources))) as executor:
+        futures = [executor.submit(lambda item: parse_markdown_table(fetch_text(item["url"]), item), source) for source in markdown_table_sources]
+        for future in as_completed(futures):
+            jobs.extend(future.result())
     return jobs
 
 
@@ -1035,7 +1266,7 @@ def fetch_remotive():
     jobs = []
     for row in rows[:80]:
         title = row.get("title") or ""
-        if not re.search(r"intern|internship|co-op|new grad|graduate|entry level|early career|software|engineer|machine learning|data", title, re.I):
+        if not (EARLY_CAREER_PATTERN.search(title) and TECH_ROLE_PATTERN.search(title)):
             continue
         jobs.append(
             normalize_job(
@@ -1064,7 +1295,7 @@ def fetch_remoteok():
     jobs = []
     for row in rows[:80]:
         title = row.get("position") or ""
-        if not re.search(r"intern|internship|co-op|new grad|graduate|entry level|early career|software|engineer|machine learning|data", title, re.I):
+        if not (EARLY_CAREER_PATTERN.search(title) and TECH_ROLE_PATTERN.search(title)):
             continue
         tags = row.get("tags") if isinstance(row.get("tags"), list) else []
         description = strip_tags(row.get("description") or "")
@@ -1089,37 +1320,91 @@ def fetch_remoteok():
     return jobs
 
 
+def fetch_greenhouse_board(board):
+    data = fetch_json(f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true")
+    rows = data.get("jobs", []) if isinstance(data, dict) else []
+    company = data.get("name") if isinstance(data, dict) else ""
+    jobs = []
+    for row in rows:
+        title = row.get("title") or ""
+        if not EARLY_CAREER_PATTERN.search(title):
+            continue
+        location = (row.get("location") or {}).get("name") or "Location not listed"
+        season = infer_season(title, "", "2027" if "2027" in title else "2026")
+        role_type = "New Grad" if season == "New Grad" or re.search(r"new grad|graduate|entry[- ]?level|early career", title, re.I) else "Internship"
+        description = strip_tags(row.get("content") or "")
+        jobs.append(
+            normalize_job(
+                {
+                    "id": f"greenhouse-{board}-{row.get('id')}",
+                    "company": company or board,
+                    "role": title,
+                    "location": location,
+                    "season": season,
+                    "mode": infer_mode(location),
+                    "source": f"Greenhouse · {company or board}",
+                    "sourceUrl": row.get("absolute_url"),
+                    "posted": str(row.get("updated_at") or "")[:10],
+                    "tags": [item for item in ["Company Board", role_type, board, season] if item],
+                    "summary": description[:220] or f"{title} from {company or board}'s public Greenhouse board.",
+                    "description": description[:2200],
+                }
+            )
+        )
+    return jobs
+
+
 def fetch_greenhouse():
     jobs = []
-    for board in greenhouse_boards:
-        data = fetch_json(f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true")
-        rows = data.get("jobs", []) if isinstance(data, dict) else []
-        company = data.get("name") if isinstance(data, dict) else ""
-        for row in rows:
-            title = row.get("title") or ""
-            if not re.search(r"intern|internship|university|student|co-op|new grad|graduate|entry level|early career", title, re.I):
-                continue
-            location = (row.get("location") or {}).get("name") or "Location not listed"
-            season = infer_season(title, "", "2027" if "2027" in title else "2026")
-            description = strip_tags(row.get("content") or "")
-            jobs.append(
-                normalize_job(
-                    {
-                        "id": f"greenhouse-{board}-{row.get('id')}",
-                        "company": company or board,
-                        "role": title,
-                        "location": location,
-                        "season": season,
-                        "mode": infer_mode(location),
-                        "source": "Greenhouse",
-                        "sourceUrl": row.get("absolute_url"),
-                        "posted": str(row.get("updated_at") or "")[:10],
-                        "tags": [item for item in ["Company Board", board, season] if item],
-                        "summary": description[:180] or f"{title} from {company or board}'s public Greenhouse board.",
-                        "description": description[:1800],
-                    }
-                )
+    with ThreadPoolExecutor(max_workers=min(10, len(greenhouse_boards))) as executor:
+        futures = [executor.submit(fetch_greenhouse_board, board) for board in greenhouse_boards]
+        for future in as_completed(futures):
+            jobs.extend(future.result())
+    return jobs
+
+
+def fetch_lever_board(board):
+    rows = fetch_json(f"https://api.lever.co/v0/postings/{board}?mode=json")
+    jobs = []
+    for row in rows if isinstance(rows, list) else []:
+        title = row.get("text") or ""
+        if not EARLY_CAREER_PATTERN.search(title):
+            continue
+        categories = row.get("categories") or {}
+        location = categories.get("location") or "Location not listed"
+        commitment = categories.get("commitment") or ""
+        description = strip_tags(row.get("descriptionPlain") or row.get("description") or "")
+        season = infer_season(title, "", "2027" if "2027" in title else "2026")
+        role_type = "New Grad" if season == "New Grad" or re.search(r"new grad|graduate|entry[- ]?level|early career", title, re.I) else "Internship"
+        jobs.append(
+            normalize_job(
+                {
+                    "id": f"lever-{board}-{row.get('id') or slugify(title)}",
+                    "company": board.title(),
+                    "role": title,
+                    "location": location,
+                    "season": season,
+                    "mode": infer_mode(location),
+                    "source": f"Lever · {board.title()}",
+                    "sourceUrl": row.get("hostedUrl") or row.get("applyUrl"),
+                    "posted": datetime.fromtimestamp((row.get("createdAt") or 0) / 1000, timezone.utc).date().isoformat()
+                    if row.get("createdAt")
+                    else "",
+                    "tags": [item for item in ["Company Board", role_type, commitment, season] if item],
+                    "summary": description[:220] or f"{title} from {board.title()}'s public Lever board.",
+                    "description": description[:2200],
+                }
             )
+        )
+    return jobs
+
+
+def fetch_lever():
+    jobs = []
+    with ThreadPoolExecutor(max_workers=min(6, len(lever_boards))) as executor:
+        futures = [executor.submit(fetch_lever_board, board) for board in lever_boards]
+        for future in as_completed(futures):
+            jobs.extend(future.result())
     return jobs
 
 
@@ -1141,11 +1426,15 @@ def filter_jobs(jobs, params):
     remote = clean_text(params.get("remote"), 40, "all") or "all"
     filtered = []
     for job in jobs:
-        blob = f"{job['company']} {job['role']} {job['location']} {job['season']} {' '.join(job['tags'])}".lower()
+        blob = (
+            f"{job['company']} {job['role']} {job['location']} {job['season']} {job.get('source', '')} "
+            f"{job.get('summary', '')} {job.get('description', '')} {' '.join(job['tags'])}"
+        ).lower()
         season_ok = (
             season == "all"
             or (season == "fall2026" and job["season"] == "2026 Fall")
             or (season == "2027" and job["season"] == "2027")
+            or (season == "internship" and (EARLY_CAREER_PATTERN.search(blob) and "new grad" not in blob))
             or (season == "newgrad" and (job["season"] == "New Grad" or "new grad" in blob or "entry level" in blob or "early career" in blob))
             or season.replace("-", " ") in blob
         )
@@ -1162,7 +1451,9 @@ def get_live_jobs(params):
         status = []
         fetchers = [
             ("SimplifyJobs", fetch_simplify),
+            ("GitHub Curated Tables", fetch_markdown_tables),
             ("Greenhouse Job Board API", fetch_greenhouse),
+            ("Lever Job Board API", fetch_lever),
             ("Remotive API", fetch_remotive),
             ("RemoteOK API", fetch_remoteok),
         ]
@@ -1173,28 +1464,37 @@ def get_live_jobs(params):
                 status.append({"index": index, "ok": True, "count": len(fetched), "error": ""})
             except Exception as exc:
                 status.append({"index": index, "ok": False, "count": 0, "error": str(exc)})
-        unique = sorted(dedupe_jobs(jobs), key=lambda item: item.get("match", 0), reverse=True)[:800]
+        unique = sorted(dedupe_jobs(jobs), key=lambda item: item.get("match", 0), reverse=True)[:LIVE_INDEX_LIMIT]
+        sources = [
+            {"name": "SimplifyJobs Summer2026", "url": simplify_sources[1]["url"]},
+            {"name": "SimplifyJobs Off-Season", "url": simplify_sources[0]["url"]},
+            {"name": "SimplifyJobs New Grad", "url": simplify_sources[2]["url"]},
+            *[{"name": source["name"], "url": source["url"]} for source in markdown_table_sources],
+            *[
+                {"name": f"Greenhouse · {board}", "url": f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs"}
+                for board in greenhouse_boards
+            ],
+            *[
+                {"name": f"Lever · {board.title()}", "url": f"https://api.lever.co/v0/postings/{board}?mode=json"}
+                for board in lever_boards
+            ],
+            {"name": "Remotive API", "url": "https://remotive.com/api/remote-jobs"},
+            {"name": "RemoteOK API", "url": remoteok_url},
+        ]
         job_cache["created_at"] = now
         job_cache["payload"] = {
             "fetchedAt": datetime.now(timezone.utc).isoformat(),
             "jobs": unique,
-            "sources": [
-                {"name": "SimplifyJobs Summer2026", "url": simplify_sources[1]["url"]},
-                {"name": "SimplifyJobs Off-Season", "url": simplify_sources[0]["url"]},
-                {"name": "SimplifyJobs New Grad", "url": simplify_sources[2]["url"]},
-                {"name": "Greenhouse Job Board API", "url": "https://developers.greenhouse.io/job-board.html"},
-                {"name": "Remotive API", "url": "https://remotive.com/api/remote-jobs"},
-                {"name": "RemoteOK API", "url": remoteok_url},
-            ],
+            "sources": sources,
             "sourceStatus": status,
         }
     payload = job_cache["payload"]
     filtered = filter_jobs(payload["jobs"], params)
     try:
-        requested_limit = int(params.get("limit") or 120)
+        requested_limit = int(params.get("limit") or 240)
     except (TypeError, ValueError):
-        requested_limit = 120
-    limit = max(1, min(800, requested_limit))
+        requested_limit = 240
+    limit = max(1, min(LIVE_INDEX_LIMIT, requested_limit))
     return {**payload, "total": len(payload["jobs"]), "filteredTotal": len(filtered), "count": len(filtered[:limit]), "jobs": filtered[:limit]}
 
 

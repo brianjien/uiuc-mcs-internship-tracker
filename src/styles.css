@@ -2234,6 +2234,37 @@ a {
   white-space: nowrap;
 }
 
+.opportunity-detail-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.opportunity-detail-strip span {
+  min-height: 24px;
+  padding: 4px 8px;
+  border: 1px solid #e1eadf;
+  border-radius: 7px;
+  background: #fbfdfb;
+  color: #526158;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.opportunity-summary {
+  display: -webkit-box;
+  max-width: 920px;
+  margin: -1px 0 0;
+  overflow: hidden;
+  color: #526158;
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.38;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+}
+
 .opportunity-score {
   display: grid;
   justify-items: center;

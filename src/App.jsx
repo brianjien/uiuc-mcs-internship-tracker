@@ -2294,9 +2294,10 @@ function LiveSearchView({
           <input value={liveQuery} onChange={(event) => setLiveQuery(event.target.value)} placeholder="Software, ML, data, company..." />
         </label>
         <label>
-          Season
+          Track
           <select value={liveSeason} onChange={(event) => setLiveSeason(event.target.value)}>
             <option value="all">All</option>
+            <option value="internship">Internship</option>
             <option value="fall2026">2026 Fall</option>
             <option value="2027">2027</option>
             <option value="newgrad">New Grad</option>
@@ -2385,6 +2386,12 @@ function LiveSearchView({
                     <span key={`${job.id}-${tag}`}>{tag}</span>
                   ))}
                 </div>
+                <div className="opportunity-detail-strip">
+                  <span>Posted {job.posted || "Recently"}</span>
+                  <span>{job.sponsorship === "Unknown" ? "Sponsorship: verify" : job.sponsorship}</span>
+                  <span>{sourceUrl ? "Apply link ready" : "Source link missing"}</span>
+                </div>
+                {job.summary && <p className="opportunity-summary">{job.summary}</p>}
               </div>
               <div className="opportunity-score">
                 <strong>{job.match}</strong>
@@ -3689,7 +3696,7 @@ export function App() {
   const [liveQuery, setLiveQuery] = useState("");
   const [liveSeason, setLiveSeason] = useState("all");
   const [liveRemote, setLiveRemote] = useState("all");
-  const [liveLimit, setLiveLimit] = useState(120);
+  const [liveLimit, setLiveLimit] = useState(240);
   const [liveTotal, setLiveTotal] = useState(0);
   const [liveFilteredTotal, setLiveFilteredTotal] = useState(0);
   const [liveFetchedAt, setLiveFetchedAt] = useState("");
@@ -4188,14 +4195,14 @@ export function App() {
   }
 
   function loadMoreLiveJobs() {
-    setLiveLimit((current) => current + 80);
+    setLiveLimit((current) => current + 160);
   }
 
   function clearLiveFilters() {
     setLiveQuery("");
     setLiveSeason("all");
     setLiveRemote("all");
-    setLiveLimit(120);
+    setLiveLimit(240);
   }
 
   function clearPipelineFilters() {
