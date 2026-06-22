@@ -359,6 +359,12 @@ function getDocumentPreviewMode(document = {}) {
   return "empty";
 }
 
+function isPdfDocument(document = {}) {
+  const fileType = String(document.fileType || "").toLowerCase();
+  const fileName = String(document.fileName || "").toLowerCase();
+  return fileType === "application/pdf" || fileName.endsWith(".pdf");
+}
+
 function getDocumentPreviewSource(document = {}) {
   if (document.fileData) return document.fileData;
   const fileUrl = safeDocumentFileUrl(document.fileUrl);
@@ -1023,10 +1029,26 @@ function DocumentPreviewPanel({ document, authToken }) {
   const mode = getDocumentPreviewMode(document);
   const rawSource = getDocumentPreviewSource(document);
   const fileUrl = safeDocumentFileUrl(document.fileUrl);
+  const downloadUrl = getDocumentDownloadUrl(document);
   const [blobSource, setBlobSource] = useState("");
   const [previewState, setPreviewState] = useState("idle");
   const [previewError, setPreviewError] = useState("");
+  const [mobilePreviewFallback, setMobilePreviewFallback] = useState(false);
   const shouldUseBlob = Boolean((document.fileData || fileUrl) && (mode === "frame" || mode === "image"));
+  const shouldUseMobilePdfFallback = mobilePreviewFallback && mode === "frame" && isPdfDocument(document);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    const mediaQuery = window.matchMedia("(max-width: 760px), (pointer: coarse)");
+    const syncPreviewMode = () => setMobilePreviewFallback(Boolean(mediaQuery.matches));
+    syncPreviewMode();
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", syncPreviewMode);
+      return () => mediaQuery.removeEventListener("change", syncPreviewMode);
+    }
+    mediaQuery.addListener?.(syncPreviewMode);
+    return () => mediaQuery.removeListener?.(syncPreviewMode);
+  }, []);
 
   useEffect(() => {
     setBlobSource("");
@@ -1075,6 +1097,7 @@ function DocumentPreviewPanel({ document, authToken }) {
   }, [authToken, document.fileData, fileUrl, shouldUseBlob]);
 
   const source = shouldUseBlob ? blobSource : rawSource;
+  const mobileOpenUrl = fileUrl || rawSource || source || safeExternalUrl(document.url);
 
   if (shouldUseBlob && previewState === "error") {
     return (
@@ -1092,6 +1115,32 @@ function DocumentPreviewPanel({ document, authToken }) {
         <FileText size={32} aria-hidden="true" />
         <strong>Preparing preview</strong>
         <span>Loading the protected file through your signed-in session.</span>
+      </div>
+    );
+  }
+
+  if (shouldUseMobilePdfFallback) {
+    return (
+      <div className="document-preview-mobile-fallback">
+        <FileText size={34} aria-hidden="true" />
+        <strong>Open PDF preview</strong>
+        <span>
+          Mobile browsers can block embedded PDF previews. Open the file in the browser viewer, or download the original.
+        </span>
+        <div className="document-preview-mobile-actions">
+          {mobileOpenUrl && (
+            <a className="primary-button" href={mobileOpenUrl} target="_blank" rel="noreferrer">
+              <ExternalLink size={15} aria-hidden="true" />
+              Open Preview
+            </a>
+          )}
+          {(downloadUrl || document.fileData) && (
+            <a className="secondary-button" href={downloadUrl || document.fileData} download={document.fileName || `${document.name}.pdf`}>
+              <Download size={15} aria-hidden="true" />
+              Download
+            </a>
+          )}
+        </div>
       </div>
     );
   }
