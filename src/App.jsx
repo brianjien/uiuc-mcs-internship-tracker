@@ -191,6 +191,7 @@ const blankDocumentDraft = {
   type: "Resume",
   status: "Draft",
   target: "General",
+  sourceJobId: "",
   url: "",
   version: "v1",
   owner: "",
@@ -228,6 +229,7 @@ function normalizeDocument(document = {}) {
     type: document.type || document.kind || "Resume",
     status: document.status || "Draft",
     target: document.target || document.job || "General",
+    sourceJobId: document.sourceJobId || "",
     url: document.url || "",
     version: document.version || "v1",
     owner: document.owner || "",
@@ -241,6 +243,10 @@ function normalizeDocument(document = {}) {
     storage: document.storage || "",
     updated: document.updated || new Date().toISOString(),
   };
+}
+
+function getJobDocumentLabel(job = {}) {
+  return `${job.company || "Company"} · ${job.role || "Role"}`;
 }
 
 function safeNotificationId(value = "") {
@@ -2905,6 +2911,7 @@ function DocumentsView({
   onUpdateDocument,
   onDeleteDocument,
   onDuplicateDocument,
+  onSelectJob,
   onToast,
 }) {
   const fileInputRef = useRef(null);
@@ -2922,7 +2929,7 @@ function DocumentsView({
     const seen = new Set(["General"]);
     const options = ["General"];
     jobs.forEach((job) => {
-      const label = `${job.company} · ${job.role}`;
+      const label = getJobDocumentLabel(job);
       if (!seen.has(label)) {
         seen.add(label);
         options.push(label);
@@ -2930,20 +2937,31 @@ function DocumentsView({
     });
     return options;
   }, [jobs]);
+  const jobOptions = useMemo(
+    () => [...jobs].sort((left, right) => getJobDocumentLabel(left).localeCompare(getJobDocumentLabel(right))),
+    [jobs],
+  );
+  const jobById = useMemo(() => new Map(jobs.map((job) => [job.id, job])), [jobs]);
+  const jobByLabel = useMemo(() => new Map(jobs.map((job) => [getJobDocumentLabel(job), job])), [jobs]);
+
+  function resolveDocumentJob(document) {
+    return jobById.get(document.sourceJobId) || jobByLabel.get(document.target) || null;
+  }
 
   const filteredDocuments = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return documents.filter((document) => {
+      const linkedJob = resolveDocumentJob(document);
       const matchesStatus = statusFilter === "All" || document.status === statusFilter;
       const matchesType = typeFilter === "All" || document.type === typeFilter;
-      const blob = `${document.name} ${document.type} ${document.status} ${document.target} ${document.url} ${document.notes}`.toLowerCase();
+      const blob = `${document.name} ${document.type} ${document.status} ${document.target} ${document.url} ${document.notes} ${linkedJob ? getJobDocumentLabel(linkedJob) : ""}`.toLowerCase();
       return matchesStatus && matchesType && (!needle || blob.includes(needle));
     });
-  }, [documents, query, statusFilter, typeFilter]);
+  }, [documents, query, statusFilter, typeFilter, jobById, jobByLabel]);
 
   const readyCount = documents.filter((document) => document.status === "Ready" || document.status === "Submitted").length;
   const reviewCount = documents.filter((document) => document.status === "Needs Review").length;
-  const linkedCount = documents.filter((document) => document.url || document.fileData || document.fileUrl).length;
+  const linkedCount = documents.filter((document) => resolveDocumentJob(document)).length;
   const sortedDocumentUpdates = documents
     .map((document) => document.updated)
     .filter(Boolean)
@@ -2963,6 +2981,15 @@ function DocumentsView({
     setDraft((current) => ({ ...current, [field]: value }));
   }
 
+  function updateLinkedJob(jobId) {
+    const linkedJob = jobById.get(jobId);
+    setDraft((current) => ({
+      ...current,
+      sourceJobId: linkedJob ? linkedJob.id : "",
+      target: linkedJob ? getJobDocumentLabel(linkedJob) : current.target || "General",
+    }));
+  }
+
   function resetDraft() {
     setDraft(blankDocumentDraft);
     setEditingId("");
@@ -2972,10 +2999,12 @@ function DocumentsView({
   }
 
   function editDocument(document) {
+    const linkedJob = resolveDocumentJob(document);
     setDraft({
       ...blankDocumentDraft,
       ...document,
       target: document.target || "General",
+      sourceJobId: linkedJob?.id || document.sourceJobId || "",
     });
     setEditingId(document.id);
     setFileNotice(document.fileName ? `${document.fileName}${document.fileSize ? ` · ${formatBytes(document.fileSize)}` : ""}` : "");
@@ -3039,13 +3068,15 @@ function DocumentsView({
     setUploading(true);
     try {
       const uploadedMeta = selectedFile ? await uploadDocumentFile(selectedFile, authToken) : {};
+      const linkedJob = jobById.get(draft.sourceJobId);
       const nextDocument = normalizeDocument({
         ...draft,
         ...uploadedMeta,
         id: editingId || `document-${Date.now()}`,
         name: draft.name.trim(),
         url: safeExternalUrl(draft.url),
-        target: draft.target.trim() || "General",
+        target: linkedJob ? getJobDocumentLabel(linkedJob) : draft.target.trim() || "General",
+        sourceJobId: linkedJob?.id || "",
         owner: draft.owner.trim(),
         notes: draft.notes.trim(),
         version: draft.version.trim() || "v1",
@@ -3103,7 +3134,7 @@ function DocumentsView({
         </article>
         <article>
           <strong>{linkedCount}</strong>
-          <span>linked</span>
+          <span>linked roles</span>
         </article>
         <article>
           <strong>{latestUpdate ? formatDate(latestUpdate, { month: "short", day: "numeric" }) : "None"}</strong>
@@ -3140,6 +3171,17 @@ function DocumentsView({
             Target
             <select value={draft.target} onChange={(event) => update("target", event.target.value)}>
               {targetOptions.map((target) => <option key={target}>{target}</option>)}
+            </select>
+          </label>
+          <label>
+            Linked saved job
+            <select value={draft.sourceJobId} onChange={(event) => updateLinkedJob(event.target.value)}>
+              <option value="">No linked job</option>
+              {jobOptions.map((job) => (
+                <option key={job.id} value={job.id}>
+                  {getJobDocumentLabel(job)}
+                </option>
+              ))}
             </select>
           </label>
           <label>
@@ -3211,6 +3253,7 @@ function DocumentsView({
               const documentUrl = safeExternalUrl(doc.url);
               const fileUrl = safeDocumentFileUrl(doc.fileUrl);
               const downloadUrl = getDocumentDownloadUrl(doc);
+              const linkedJob = resolveDocumentJob(doc);
               const canOpenLink = Boolean(documentUrl);
               const canPreview = Boolean(doc.fileData || fileUrl || canOpenLink);
               return (
@@ -3221,7 +3264,7 @@ function DocumentsView({
                     </span>
                     <span>
                       <strong>{doc.name}</strong>
-                      <small>{doc.type} · {doc.target || "General"}</small>
+                      <small>{doc.type} · {linkedJob ? getJobDocumentLabel(linkedJob) : doc.target || "General"}</small>
                     </span>
                     <small className={classNames("document-status", `is-${doc.status.toLowerCase().replace(/\s+/g, "-")}`)}>
                       {doc.status}
@@ -3281,6 +3324,12 @@ function DocumentsView({
                     <button className="secondary-button" type="button" onClick={() => copyLink(doc)} disabled={!documentUrl} aria-label={`Copy ${doc.name} link`}>
                       <Copy size={14} aria-hidden="true" />
                     </button>
+                    {linkedJob && (
+                      <button className="secondary-button" type="button" onClick={() => onSelectJob(linkedJob.id)} aria-label={`Open linked role for ${doc.name}`}>
+                        <BriefcaseBusiness size={14} aria-hidden="true" />
+                        Role
+                      </button>
+                    )}
                     <button className="secondary-button" type="button" onClick={() => onDuplicateDocument(doc.id)} aria-label={`Duplicate ${doc.name}`}>
                       <Plus size={14} aria-hidden="true" />
                     </button>
@@ -4179,6 +4228,10 @@ export function App() {
           onUpdateDocument={updateDocument}
           onDeleteDocument={deleteDocument}
           onDuplicateDocument={duplicateDocument}
+          onSelectJob={(id) => {
+            setSelectedId(id);
+            setActiveView("Pipeline");
+          }}
           onToast={setToast}
         />
       );

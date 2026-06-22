@@ -229,6 +229,13 @@ def clean_identifier(value="", fallback=""):
     return (text[:128] or fallback or f"item-{uuid.uuid4()}")
 
 
+def clean_reference_id(value=""):
+    raw = CONTROL_CHAR_RE.sub("", str(value or "").strip())
+    if ".." in raw or raw.startswith("/"):
+        return ""
+    return clean_identifier(raw, "")
+
+
 def clean_email(value=""):
     email = clean_text(value, 254).lower()
     return email if EMAIL_RE.match(email) else ""
@@ -419,6 +426,7 @@ def sanitize_document(document=None):
         "type": document_type,
         "status": status,
         "target": clean_text(document.get("target"), 140, "General"),
+        "sourceJobId": clean_reference_id(document.get("sourceJobId")) if document.get("sourceJobId") else "",
         "url": clean_url(document.get("url")),
         "version": clean_text(document.get("version"), 40, "v1"),
         "owner": clean_text(document.get("owner"), 120),
