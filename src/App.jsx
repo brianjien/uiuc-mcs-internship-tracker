@@ -1048,8 +1048,9 @@ function StageSelect({ value, onChange, label = "Move stage" }) {
   );
 }
 
-function JobCard({ job, active, onSelect, onStageChange, onToggleSaved, onDragStart }) {
+function JobCard({ job, active, onSelect, onStageChange, onTogglePriority, onRemoveJob, onDragStart }) {
   const urgent = daysUntil(job.deadline) <= 14;
+  const isSaved = job.stage === "saved";
 
   return (
     <article
@@ -1071,11 +1072,19 @@ function JobCard({ job, active, onSelect, onStageChange, onToggleSaved, onDragSt
         </span>
       </div>
       <div className="job-card-actions">
-        <IconButton label={job.priority ? "Remove priority" : "Mark priority"} onClick={(event) => {
-          event.stopPropagation();
-          onToggleSaved(job.id);
-        }}>
-          {job.priority ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}
+        <IconButton
+          className={isSaved ? "danger-icon-button" : ""}
+          label={isSaved ? `Remove ${job.company} from Saved` : job.priority ? "Remove priority" : "Mark priority"}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (isSaved) {
+              onRemoveJob(job.id);
+              return;
+            }
+            onTogglePriority(job.id);
+          }}
+        >
+          {isSaved ? <Trash2 size={15} /> : job.priority ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}
         </IconButton>
         <IconButton label={`Open ${job.company} details`} onClick={(event) => {
           event.stopPropagation();
@@ -1105,7 +1114,8 @@ function StageColumn({
   selectedId,
   onSelect,
   onStageChange,
-  onToggleSaved,
+  onTogglePriority,
+  onRemoveJob,
   onDrop,
   onDragStart,
   onAdd,
@@ -1137,7 +1147,8 @@ function StageColumn({
             active={job.id === selectedId}
             onSelect={onSelect}
             onStageChange={onStageChange}
-            onToggleSaved={onToggleSaved}
+            onTogglePriority={onTogglePriority}
+            onRemoveJob={onRemoveJob}
             onDragStart={onDragStart}
           />
         ))}
@@ -3273,6 +3284,17 @@ export function App() {
     setJobs((current) => current.map((job) => (job.id === id ? { ...job, priority: !job.priority } : job)));
   }
 
+  function removeJob(id) {
+    const target = jobs.find((job) => job.id === id);
+    if (!target) return;
+    const confirmed = window.confirm(`Remove ${target.company} from Saved? This deletes it from your tracker.`);
+    if (!confirmed) return;
+    setJobs((current) => current.filter((job) => job.id !== id));
+    setTasks((current) => current.filter((task) => task.sourceJobId !== id));
+    if (selectedId === id) setSelectedId(null);
+    setToast(`${target.company} removed from Saved`);
+  }
+
   function handleDrop(stageId) {
     if (!draggingId) return;
     changeStage(draggingId, stageId);
@@ -3769,7 +3791,8 @@ export function App() {
                         selectedId={selectedJob?.id}
                         onSelect={setSelectedId}
                         onStageChange={changeStage}
-                        onToggleSaved={togglePriority}
+                        onTogglePriority={togglePriority}
+                        onRemoveJob={removeJob}
                         onDrop={handleDrop}
                         onDragStart={setDraggingId}
                         onAdd={setModalStage}
