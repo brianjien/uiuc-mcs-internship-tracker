@@ -508,6 +508,7 @@ def sanitize_task(task=None):
         "due": clean_date(task.get("due")),
         "priority": priority,
         "sourceJobId": clean_identifier(task.get("sourceJobId"), "") if task.get("sourceJobId") else "",
+        "taskType": clean_text(task.get("taskType"), 40),
     }
 
 

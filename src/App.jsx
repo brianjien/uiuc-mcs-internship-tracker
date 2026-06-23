@@ -357,6 +357,7 @@ export function App() {
         due: payload.due || "",
         priority: payload.priority || "Medium",
         sourceJobId: payload.sourceJobId || "",
+        taskType: payload.taskType || "",
       },
       ...current,
     ]);
@@ -669,7 +670,20 @@ export function App() {
         />
       );
     }
-    if (activeView === "Tasks") return <TasksView tasks={tasks} jobs={jobs} onToggleTask={toggleTask} onAddTask={addTask} />;
+    if (activeView === "Tasks") {
+      return (
+        <TasksView
+          tasks={tasks}
+          jobs={jobs}
+          onToggleTask={toggleTask}
+          onAddTask={addTask}
+          onSelectJob={(id) => {
+            setSelectedId(id);
+            setActiveView("Pipeline");
+          }}
+        />
+      );
+    }
     if (activeView === "Documents") {
       return (
         <DocumentsView
