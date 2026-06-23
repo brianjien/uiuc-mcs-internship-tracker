@@ -703,6 +703,109 @@ def save_workspace(user_id, workspace):
     return next_workspace
 
 
+def stage_count(jobs, stage):
+    return len([job for job in jobs if isinstance(job, dict) and job.get("stage") == stage])
+
+
+def applied_count(jobs):
+    return len([job for job in jobs if isinstance(job, dict) and job.get("stage") and job.get("stage") != "saved"])
+
+
+def conversion_rate(numerator, denominator):
+    if not denominator:
+        return 0
+    return round((numerator / denominator) * 100)
+
+
+def public_leaderboard_entry(entry):
+    public_entry = dict(entry)
+    public_entry.pop("userId", None)
+    return public_entry
+
+
+def get_leaderboard(current_user_id, limit=50):
+    ensure_schema()
+    safe_limit = clean_int(limit, 5, 100, 50)
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  users.id,
+                  users.email,
+                  users.profile_json,
+                  users.created_at,
+                  workspace_data.jobs_json,
+                  workspace_data.goal_json,
+                  workspace_data.updated_at AS workspace_updated_at
+                FROM users
+                LEFT JOIN workspace_data ON workspace_data.user_id = users.id
+                """
+            )
+            rows = cur.fetchall()
+
+    ranked = []
+    for row in rows:
+        profile = clean_profile(parse_json(row.get("profile_json"), {}))
+        jobs = [sanitize_job(job) for job in parse_json(row.get("jobs_json"), []) if isinstance(job, dict)]
+        goal = sanitize_goal(parse_json(row.get("goal_json"), None))
+        applied = applied_count(jobs)
+        interviews = stage_count(jobs, "interview")
+        offers = stage_count(jobs, "offer")
+        oa = stage_count(jobs, "oa")
+        saved = stage_count(jobs, "saved")
+        goal_target = clean_int((goal or {}).get("target"), 0, 5000, 0)
+        display_name = clean_text(profile.get("name"), 80) or clean_text(str(row.get("email") or "").split("@", 1)[0], 80, "Candidate")
+
+        ranked.append(
+            {
+                "userId": row["id"],
+                "name": display_name or "Candidate",
+                "avatar": profile.get("avatar") or "/assets/profile-presets/avatar-portrait.png",
+                "program": profile.get("program") or "Career Profile",
+                "graduation": profile.get("graduation") or "2026-2027 cycle",
+                "applied": applied,
+                "tracked": len(jobs),
+                "saved": saved,
+                "oa": oa,
+                "interviews": interviews,
+                "offers": offers,
+                "priority": len([job for job in jobs if job.get("priority")]),
+                "conversionRate": conversion_rate(interviews + offers, applied),
+                "offerRate": conversion_rate(offers, applied),
+                "goalTarget": goal_target,
+                "goalProgress": min(100, round((applied / goal_target) * 100)) if goal_target else 0,
+                "workspaceUpdatedAt": str(row.get("workspace_updated_at") or row.get("created_at") or ""),
+                "isCurrentUser": row["id"] == current_user_id,
+            }
+        )
+
+    ranked.sort(
+        key=lambda entry: (
+            entry["applied"],
+            entry["offers"],
+            entry["interviews"],
+            entry["workspaceUpdatedAt"],
+        ),
+        reverse=True,
+    )
+    for index, entry in enumerate(ranked, start=1):
+        entry["rank"] = index
+
+    current_user = next((entry for entry in ranked if entry["userId"] == current_user_id), None)
+    total_applied = sum(entry["applied"] for entry in ranked)
+    return {
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "metric": "applied",
+        "totalUsers": len(ranked),
+        "activeUsers": len([entry for entry in ranked if entry["applied"] > 0]),
+        "topApplied": ranked[0]["applied"] if ranked else 0,
+        "peerAverage": round(total_applied / len(ranked)) if ranked else 0,
+        "currentUser": public_leaderboard_entry(current_user) if current_user else None,
+        "entries": [public_leaderboard_entry(entry) for entry in ranked[:safe_limit]],
+    }
+
+
 def storage_bucket():
     return env("S3_BUCKET", env("S3_BUCKET_NAME"))
 
@@ -1509,6 +1612,8 @@ def rate_limit_key():
         return "auth", 30, 60
     if request.path == "/api/jobs":
         return "jobs", 90, 60
+    if request.path == "/api/leaderboard":
+        return "leaderboard", 120, 60
     if request.path in {"/api/workspace", "/api/profile"}:
         return "workspace", 180, 60
     return "api", 300, 60
@@ -1761,6 +1866,14 @@ def workspace_put():
         return json_response({"error": "Invalid JSON body."}, 400)
     submitted_workspace = body.get("workspace") if isinstance(body.get("workspace"), dict) else body
     return json_response({"workspace": save_workspace(user["id"], submitted_workspace)})
+
+
+@app.get("/api/leaderboard")
+def leaderboard_get():
+    user, error = require_user()
+    if error:
+        return error
+    return json_response(get_leaderboard(user["id"], request.args.get("limit")))
 
 
 @app.post("/api/documents/upload")

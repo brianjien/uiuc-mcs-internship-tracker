@@ -73,6 +73,7 @@ export const stages = [
 export const navItems = [
   { label: "Dashboard", icon: Home },
   { label: "Pipeline", icon: KanbanSquare },
+  { label: "Leaderboard", icon: Trophy },
   { label: "Search", icon: Search },
   { label: "Companies", icon: Building2 },
   { label: "Contacts", icon: Users },

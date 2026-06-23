@@ -307,6 +307,104 @@ export async function getWorkspace(userId) {
   });
 }
 
+function getStageCount(jobs, stage) {
+  return jobs.filter((job) => job?.stage === stage).length;
+}
+
+function getAppliedCount(jobs) {
+  return jobs.filter((job) => job?.stage && job.stage !== "saved").length;
+}
+
+function getConversionRate(numerator, denominator) {
+  if (!denominator) return 0;
+  return Math.round((numerator / denominator) * 100);
+}
+
+function publicLeaderboardEntry(entry) {
+  const { userId, ...publicEntry } = entry;
+  return publicEntry;
+}
+
+export async function getLeaderboard(currentUserId, limit = 50) {
+  await ensureSchema();
+  const safeLimit = Math.min(100, Math.max(5, Number(limit) || 50));
+  const [rows] = await getPool().execute(
+    `
+      SELECT
+        users.id,
+        users.email,
+        users.profile_json,
+        users.created_at,
+        workspace_data.jobs_json,
+        workspace_data.goal_json,
+        workspace_data.updated_at AS workspace_updated_at
+      FROM users
+      LEFT JOIN workspace_data ON workspace_data.user_id = users.id
+    `,
+  );
+
+  const ranked = rows
+    .map((row) => {
+      const profile = parseJson(row.profile_json, {});
+      const jobs = parseJson(row.jobs_json, []);
+      const goal = parseJson(row.goal_json, null);
+      const applied = getAppliedCount(jobs);
+      const interviews = getStageCount(jobs, "interview");
+      const offers = getStageCount(jobs, "offer");
+      const oa = getStageCount(jobs, "oa");
+      const saved = getStageCount(jobs, "saved");
+      const tracked = jobs.length;
+      const priority = jobs.filter((job) => job?.priority).length;
+      const goalTarget = Number(goal?.target || 0);
+      const displayName = String(profile.name || row.email?.split("@")[0] || "Candidate").trim().slice(0, 80);
+
+      return {
+        userId: row.id,
+        name: displayName || "Candidate",
+        avatar: profile.avatar || "/assets/profile-presets/avatar-portrait.png",
+        program: profile.program || "Career Profile",
+        graduation: profile.graduation || "2026-2027 cycle",
+        applied,
+        tracked,
+        saved,
+        oa,
+        interviews,
+        offers,
+        priority,
+        conversionRate: getConversionRate(interviews + offers, applied),
+        offerRate: getConversionRate(offers, applied),
+        goalTarget,
+        goalProgress: goalTarget ? Math.min(100, Math.round((applied / goalTarget) * 100)) : 0,
+        workspaceUpdatedAt: row.workspace_updated_at || row.created_at,
+        isCurrentUser: row.id === currentUserId,
+      };
+    })
+    .sort((left, right) => {
+      if (right.applied !== left.applied) return right.applied - left.applied;
+      if (right.offers !== left.offers) return right.offers - left.offers;
+      if (right.interviews !== left.interviews) return right.interviews - left.interviews;
+      return String(right.workspaceUpdatedAt || "").localeCompare(String(left.workspaceUpdatedAt || ""));
+    })
+    .map((entry, index) => ({ ...entry, rank: index + 1 }));
+
+  const currentUser = ranked.find((entry) => entry.userId === currentUserId) || null;
+  const topApplied = ranked[0]?.applied || 0;
+  const totalApplied = ranked.reduce((sum, entry) => sum + entry.applied, 0);
+  const activeUsers = ranked.filter((entry) => entry.applied > 0).length;
+  const peerAverage = ranked.length ? Math.round(totalApplied / ranked.length) : 0;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    metric: "applied",
+    totalUsers: ranked.length,
+    activeUsers,
+    topApplied,
+    peerAverage,
+    currentUser: currentUser ? publicLeaderboardEntry(currentUser) : null,
+    entries: ranked.slice(0, safeLimit).map(publicLeaderboardEntry),
+  };
+}
+
 export async function saveWorkspace(userId, workspace) {
   await ensureSchema();
   const next = normalizeWorkspace(workspace);

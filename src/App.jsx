@@ -48,6 +48,7 @@ import { AuthScreen } from "./features/auth/AuthScreen.jsx";
 import { AnalyticsView } from "./features/analytics/AnalyticsView.jsx";
 import { ResourcesView } from "./features/resources/ResourcesView.jsx";
 import { DashboardView } from "./features/dashboard/DashboardView.jsx";
+import { LeaderboardView } from "./features/leaderboard/LeaderboardView.jsx";
 import { AddJobModal } from "./features/pipeline/PipelineComponents.jsx";
 import { LiveSearchView } from "./features/search/LiveSearchView.jsx";
 import { CompaniesView } from "./features/companies/CompaniesView.jsx";
@@ -640,6 +641,7 @@ export function App() {
       );
     }
     if (activeView === "Companies") return <CompaniesView jobs={jobs} liveJobs={liveJobs} onSelectCompany={selectCompany} />;
+    if (activeView === "Leaderboard") return <LeaderboardView authToken={authToken} />;
     if (activeView === "Contacts") {
       return (
         <ContactsView

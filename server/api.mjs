@@ -2,6 +2,7 @@ import {
   createUserAccount,
   deleteSession,
   findUserByToken,
+  getLeaderboard,
   getWorkspace,
   hasDatabaseConfig,
   loginGoogleUser,
@@ -274,6 +275,13 @@ export async function handleApiRequest(request, response) {
       if (!session) return true;
       const body = await readJson(request);
       sendJson(response, 200, { workspace: await saveWorkspace(session.user.id, body.workspace || body) });
+      return true;
+    }
+
+    if (url.pathname === "/api/leaderboard" && request.method === "GET") {
+      const session = await requireUser(request, response);
+      if (!session) return true;
+      sendJson(response, 200, await getLeaderboard(session.user.id, url.searchParams.get("limit")));
       return true;
     }
 
