@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build && node scripts/build-server.mjs",
+    "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "start": "node server/http.mjs",
+    "start": "python3 app.py",
+    "test": "python3 -m unittest discover -s tests",
     "wasmer:local": "npm run build && wasmer run . --net --env PORT=8080",
     "wasmer:deploy": "node scripts/deploy-wasmer-flask.mjs"
   },
