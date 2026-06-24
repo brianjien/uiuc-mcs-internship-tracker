@@ -29,7 +29,7 @@ import {
   normalizeDocument,
 } from "./lib/documents.js";
 import {
-  createSprintLabels,
+  createSprintPeriods,
   formatDate,
 } from "./lib/dates.js";
 import { buildNotificationFeed, normalizeNotificationState, safeNotificationId } from "./lib/notifications.jsx";
@@ -60,6 +60,22 @@ import { SettingsView } from "./features/settings/SettingsView.jsx";
 import { NotificationCenter } from "./components/NotificationCenter.jsx";
 import { classNames, getInitials, IconButton } from "./components/ui.jsx";
 
+function createJobActivity(type, at = new Date().toISOString()) {
+  return {
+    id: `activity-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type,
+    at,
+  };
+}
+
+function withInitialActivity(job) {
+  const type = job.stage === "saved" ? "saved" : "applied";
+  return {
+    ...job,
+    activity: Array.isArray(job.activity) && job.activity.length ? job.activity : [createJobActivity(type)],
+  };
+}
+
 export function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [authToken, setAuthToken] = useState(readInitialAuthToken);
@@ -80,7 +96,11 @@ export function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [search, setSearch] = useState("");
   const [season, setSeason] = useState("All");
-  const [sprintIndex, setSprintIndex] = useState(0);
+  const sprintPeriods = useMemo(() => createSprintPeriods(), []);
+  const [sprintIndex, setSprintIndex] = useState(() => {
+    const periods = createSprintPeriods();
+    return Math.max(0, periods.findIndex((period) => period.isCurrent));
+  });
   const [draggingId, setDraggingId] = useState(null);
   const [modalStage, setModalStage] = useState(null);
   const [toast, setToast] = useState("");
@@ -96,7 +116,7 @@ export function App() {
   const [liveFetchedAt, setLiveFetchedAt] = useState("");
   const [liveSources, setLiveSources] = useState([]);
   const nativeNoticeIdsRef = useRef(new Set());
-  const sprintLabels = useMemo(() => createSprintLabels(), []);
+  const selectedSprint = sprintPeriods[sprintIndex] || sprintPeriods.find((period) => period.isCurrent) || sprintPeriods[0];
   const todayLabel = useMemo(
     () => new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(new Date()),
     [],
@@ -271,7 +291,22 @@ export function App() {
   }
 
   function updateJob(id, patch) {
-    setJobs((current) => current.map((job) => (job.id === id ? { ...job, ...patch } : job)));
+    setJobs((current) =>
+      current.map((job) => {
+        if (job.id !== id) return job;
+        const activity = Array.isArray(job.activity) ? job.activity : [];
+        const nextActivity = [...activity];
+
+        if (patch.stage && patch.stage !== job.stage) {
+          const type = patch.stage === "saved" ? "saved" : "applied";
+          if (!nextActivity.some((item) => item.type === type)) {
+            nextActivity.push(createJobActivity(type));
+          }
+        }
+
+        return { ...job, ...patch, activity: nextActivity };
+      }),
+    );
   }
 
   function changeStage(id, stageId) {
@@ -302,7 +337,8 @@ export function App() {
   }
 
   function addJob(job) {
-    setJobs((current) => [job, ...current]);
+    const nextJob = withInitialActivity(job);
+    setJobs((current) => [nextJob, ...current]);
     setSelectedId(job.id);
     setModalStage(null);
     setToast(`${job.company} added to ${stages.find((stage) => stage.id === job.stage)?.label}`);
@@ -327,6 +363,7 @@ export function App() {
       contactEmail: job.contactEmail || "",
       notes: job.notes || "Imported from live feed. Verify sponsorship, location, and timing before applying.",
       nextStep: "Open posting, verify eligibility, and tailor resume.",
+      activity: [createJobActivity("saved")],
     };
     setJobs((current) => [importedJob, ...current]);
     setSelectedId(importedJob.id);
@@ -804,12 +841,19 @@ export function App() {
             <IconButton label="Previous sprint" onClick={() => setSprintIndex((index) => Math.max(0, index - 1))}>
               <ChevronLeft size={17} />
             </IconButton>
-            <button type="button">
+            <label className="sprint-picker">
               <CalendarDays size={17} aria-hidden="true" />
-              Sprint: {sprintLabels[sprintIndex]}
+              <span>Sprint:</span>
+              <select value={sprintIndex} onChange={(event) => setSprintIndex(Number(event.target.value))} aria-label="Select sprint">
+                {sprintPeriods.map((period, index) => (
+                  <option key={period.key} value={index}>
+                    {period.label}{period.isCurrent ? " · Current" : ""}
+                  </option>
+                ))}
+              </select>
               <ChevronDown size={14} aria-hidden="true" />
-            </button>
-            <IconButton label="Next sprint" onClick={() => setSprintIndex((index) => Math.min(sprintLabels.length - 1, index + 1))}>
+            </label>
+            <IconButton label="Next sprint" onClick={() => setSprintIndex((index) => Math.min(sprintPeriods.length - 1, index + 1))}>
               <ChevronRight size={17} />
             </IconButton>
           </div>
@@ -862,6 +906,7 @@ export function App() {
               season={season}
               upcoming={upcoming}
               todayLabel={todayLabel}
+              selectedSprint={selectedSprint}
               hasPipelineFilters={hasPipelineFilters}
               onSeasonChange={setSeason}
               onGoalChange={updateGoal}

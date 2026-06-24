@@ -1,15 +1,44 @@
-export function createSprintLabels(count = 3) {
+export function sprintKeyForDate(value = new Date()) {
+  const date = value instanceof Date ? new Date(value) : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+  return date.toISOString().slice(0, 10);
+}
+
+export function createSprintPeriods(pastWeeks = 12, futureWeeks = 4) {
   const today = new Date();
   const start = new Date(today);
   start.setDate(today.getDate() - ((today.getDay() + 6) % 7));
-  return Array.from({ length: count }, (_, index) => {
+  start.setHours(0, 0, 0, 0);
+  const currentKey = sprintKeyForDate(today);
+
+  return Array.from({ length: pastWeeks + futureWeeks + 1 }, (_, index) => {
     const weekStart = new Date(start);
-    weekStart.setDate(start.getDate() + index * 7);
+    weekStart.setDate(start.getDate() + (index - pastWeeks) * 7);
     const weekEnd = new Date(weekStart);
     weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
     const fmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
-    return `${fmt.format(weekStart)} - ${fmt.format(weekEnd)}, ${weekEnd.getFullYear()}`;
+    const key = sprintKeyForDate(weekStart);
+    return {
+      key,
+      start: weekStart.toISOString(),
+      end: weekEnd.toISOString(),
+      label: `${fmt.format(weekStart)} - ${fmt.format(weekEnd)}, ${weekEnd.getFullYear()}`,
+      isCurrent: key === currentKey,
+    };
   });
+}
+
+export function createSprintLabels(count = 3) {
+  return createSprintPeriods(0, Math.max(0, count - 1)).map((period) => period.label);
+}
+
+export function isDateInSprint(value, sprint) {
+  if (!value || !sprint) return false;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) && time >= new Date(sprint.start).getTime() && time <= new Date(sprint.end).getTime();
 }
 
 export function formatDate(value, options = { month: "short", day: "numeric" }) {

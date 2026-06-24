@@ -515,7 +515,7 @@ a {
   box-shadow: 0 1px 0 rgba(18, 26, 22, 0.03);
 }
 
-.sprint-control > button:not(.icon-button) {
+.sprint-picker {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -527,10 +527,29 @@ a {
   border-right: 1px solid var(--line);
   border-left: 1px solid var(--line);
   background: transparent;
-  cursor: pointer;
   font-size: 13px;
   font-weight: 760;
   white-space: nowrap;
+}
+
+.sprint-picker span {
+  flex: 0 0 auto;
+}
+
+.sprint-picker select {
+  min-width: 0;
+  max-width: 230px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  text-overflow: ellipsis;
+}
+
+.sprint-picker select:focus-visible {
+  color: var(--green);
 }
 
 .search-box {
@@ -987,6 +1006,176 @@ a {
   gap: 13px;
   min-height: 116px;
   padding: 18px;
+}
+
+.sprint-activity {
+  display: grid;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 1px 0 rgba(18, 26, 22, 0.03);
+}
+
+.sprint-activity-head,
+.sprint-activity-group-head,
+.sprint-activity-group-head > span,
+.sprint-activity-total {
+  display: flex;
+  align-items: center;
+}
+
+.sprint-activity-head {
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.sprint-activity-head > div:first-child > span {
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.sprint-activity-head h2 {
+  margin: 3px 0 2px;
+  font-size: 16px;
+}
+
+.sprint-activity-head p,
+.sprint-activity-group > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.sprint-activity-total {
+  gap: 8px;
+  flex: 0 0 auto;
+  color: var(--green);
+}
+
+.sprint-activity-total > span {
+  display: grid;
+  line-height: 1;
+}
+
+.sprint-activity-total strong {
+  font-size: 20px;
+}
+
+.sprint-activity-total span {
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.sprint-activity-total b {
+  min-height: 24px;
+  padding: 6px 8px 0;
+  border-radius: 5px;
+  background: var(--green-soft);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.sprint-activity-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.sprint-activity-group {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 2px solid #9fceb0;
+}
+
+.sprint-activity-group.is-applied {
+  border-top-color: #8ab5da;
+}
+
+.sprint-activity-group-head {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sprint-activity-group-head > span {
+  gap: 7px;
+  color: var(--green);
+}
+
+.sprint-activity-group.is-applied .sprint-activity-group-head > span {
+  color: var(--blue);
+}
+
+.sprint-activity-group-head strong {
+  font-size: 12px;
+}
+
+.sprint-activity-group-head b {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sprint-job-list {
+  display: grid;
+  gap: 5px;
+}
+
+.sprint-job-list button {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 46px;
+  padding: 6px 8px;
+  border: 1px solid #e5ece3;
+  border-radius: 7px;
+  background: #fcfdfb;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.sprint-job-list button:hover,
+.sprint-job-list button:focus-visible {
+  border-color: #a9d2b7;
+  background: #f4fbf6;
+  outline: 0;
+}
+
+.sprint-job-list button > span {
+  display: grid;
+  min-width: 0;
+}
+
+.sprint-job-list button strong,
+.sprint-job-list button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sprint-job-list button strong {
+  font-size: 11px;
+}
+
+.sprint-job-list button small,
+.sprint-job-list time {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.sprint-job-list time {
+  white-space: nowrap;
 }
 
 .goal-card-title {
@@ -5266,6 +5455,27 @@ a {
   .detail-grid,
   .detail-content-grid {
     grid-template-columns: 1fr;
+  }
+
+  .sprint-picker span {
+    display: none;
+  }
+
+  .sprint-picker select {
+    max-width: 220px;
+  }
+
+  .sprint-activity-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .sprint-activity-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sprint-activity-total {
+    width: 100%;
   }
 
   .oa-summary {

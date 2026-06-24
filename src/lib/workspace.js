@@ -4,6 +4,15 @@ import { normalizeDocument } from "./documents.js";
 import { normalizeNotificationState } from "./notifications.jsx";
 
 const OA_RESULTS = new Set(["Scheduled", "Completed", "Passed", "Rejected"]);
+const JOB_ACTIVITY_TYPES = new Set(["saved", "applied"]);
+
+function normalizeJobActivity(activity = {}) {
+  return {
+    id: activity.id || `activity-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: JOB_ACTIVITY_TYPES.has(activity.type) ? activity.type : "saved",
+    at: typeof activity.at === "string" ? activity.at : "",
+  };
+}
 
 function normalizeOaAttempt(attempt = {}) {
   const questionTypes = Array.isArray(attempt.questionTypes)
@@ -24,6 +33,7 @@ function normalizeJob(job = {}) {
   return {
     ...job,
     oaAttempts: Array.isArray(job.oaAttempts) ? job.oaAttempts.map(normalizeOaAttempt) : [],
+    activity: Array.isArray(job.activity) ? job.activity.map(normalizeJobActivity).filter((item) => item.at) : [],
   };
 }
 

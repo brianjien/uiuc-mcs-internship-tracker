@@ -49,6 +49,7 @@ ALLOWED_PRIORITIES = {"High", "Medium", "Low"}
 ALLOWED_DOCUMENT_TYPES = {"Resume", "Cover Letter", "Portfolio", "Transcript", "Referral Note", "Template", "Other"}
 ALLOWED_DOCUMENT_STATUSES = {"Draft", "Needs Review", "Ready", "Submitted", "Archived"}
 ALLOWED_OA_RESULTS = {"Scheduled", "Completed", "Passed", "Rejected"}
+ALLOWED_JOB_ACTIVITY_TYPES = {"saved", "applied"}
 ALLOWED_OA_QUESTION_TYPES = {
     "Coding",
     "Multiple choice",
@@ -499,6 +500,18 @@ def sanitize_oa_attempt(attempt=None):
     }
 
 
+def sanitize_job_activity(activity=None):
+    activity = activity if isinstance(activity, dict) else {}
+    activity_type = clean_text(activity.get("type"), 20)
+    if activity_type not in ALLOWED_JOB_ACTIVITY_TYPES:
+        activity_type = "saved"
+    return {
+        "id": clean_identifier(activity.get("id"), f"activity-{uuid.uuid4()}"),
+        "type": activity_type,
+        "at": clean_datetime(activity.get("at")),
+    }
+
+
 def sanitize_job(job=None):
     job = job if isinstance(job, dict) else {}
     company = clean_text(job.get("company"), 120, "Unknown")
@@ -539,6 +552,11 @@ def sanitize_job(job=None):
         "oaAttempts": [
             sanitize_oa_attempt(item)
             for item in (job.get("oaAttempts") if isinstance(job.get("oaAttempts"), list) else [])[:50]
+        ],
+        "activity": [
+            sanitize_job_activity(item)
+            for item in (job.get("activity") if isinstance(job.get("activity"), list) else [])[:200]
+            if isinstance(item, dict) and clean_datetime(item.get("at"))
         ],
     }
 

@@ -19,6 +19,7 @@ import { stages } from "../../config/appConfig.jsx";
 import { classNames, EmptyState, IconButton, MetricCard } from "../../components/ui.jsx";
 import { formatDate } from "../../lib/dates.js";
 import { DetailPanel, ProgressGoal, StageColumn } from "../pipeline/PipelineComponents.jsx";
+import { SprintActivity } from "./SprintActivity.jsx";
 
 export function DashboardView({
   jobs,
@@ -34,6 +35,7 @@ export function DashboardView({
   season,
   upcoming,
   todayLabel,
+  selectedSprint,
   hasPipelineFilters,
   onSeasonChange,
   onGoalChange,
@@ -63,6 +65,8 @@ export function DashboardView({
         <MetricCard label="Offers" value={offerCount} caption={jobs.length ? "From tracked roles" : "No tracked roles yet"} icon={Gift} tone="amber" />
         <ProgressGoal appliedCount={appliedCount} goal={goal} onGoalChange={onGoalChange} />
       </section>
+
+      <SprintActivity jobs={jobs} sprint={selectedSprint} onSelectJob={onSelectJob} />
 
       <section className="board-toolbar" aria-label="Pipeline controls">
         <div className="season-tabs" role="tablist" aria-label="Target season">
