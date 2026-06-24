@@ -20,6 +20,7 @@ import requests
 from flask import Flask, jsonify, make_response, redirect, request, send_from_directory
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
+from openapi_spec import build_openapi_spec
 from werkzeug.utils import secure_filename
 
 try:
@@ -2485,6 +2486,70 @@ def add_security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     if request.path.startswith("/api/") or request.path == "/auth/complete":
         response.headers["cache-control"] = "no-store"
+    return response
+
+
+def swagger_docs_html(nonce):
+    return """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#08783f" />
+    <title>Career Tracker API</title>
+    <link rel="icon" href="/swagger-ui/favicon-32x32.png" />
+    <link rel="stylesheet" href="/swagger-ui/swagger-ui.css" />
+    <style nonce="__NONCE__">
+      :root { color-scheme: light; }
+      body { background: #f3f8f4; margin: 0; }
+      .swagger-ui .topbar { display: none; }
+      .swagger-ui .info { margin: 36px 0 28px; }
+      .swagger-ui .info .title { color: #17231d; }
+      .swagger-ui .info a { color: #08783f; }
+      .swagger-ui .btn.authorize { border-color: #08783f; color: #08783f; }
+      .swagger-ui .btn.authorize svg { fill: #08783f; }
+      .swagger-ui .opblock.opblock-get { background: rgba(8, 120, 63, .06); border-color: #08783f; }
+      .swagger-ui .opblock.opblock-get .opblock-summary-method { background: #08783f; }
+      .swagger-ui .scheme-container { box-shadow: 0 1px 2px rgba(23, 35, 29, .12); }
+      @media (max-width: 640px) {
+        .swagger-ui .wrapper { padding: 0 12px; }
+        .swagger-ui .info { margin: 24px 0 18px; }
+        .swagger-ui .opblock .opblock-summary { align-items: flex-start; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="/swagger-ui/swagger-ui-bundle.js"></script>
+    <script src="/swagger-ui/swagger-ui-standalone-preset.js"></script>
+    <script nonce="__NONCE__">
+      window.ui = SwaggerUIBundle({
+        url: "/api/openapi.json",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        displayRequestDuration: true,
+        filter: true,
+        persistAuthorization: true,
+        tryItOutEnabled: true,
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+        layout: "StandaloneLayout"
+      });
+    </script>
+  </body>
+</html>""".replace("__NONCE__", nonce)
+
+
+@app.get("/api/openapi.json")
+def openapi_json():
+    return json_response(build_openapi_spec())
+
+
+@app.get("/api/docs")
+def swagger_docs():
+    nonce = secrets.token_urlsafe(16)
+    response = make_response(swagger_docs_html(nonce), 200)
+    response.headers["content-type"] = "text/html; charset=utf-8"
+    response.headers["Content-Security-Policy"] = build_csp(script_nonce=nonce)
     return response
 
 

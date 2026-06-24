@@ -10,6 +10,7 @@ Modern green SaaS dashboard for tracking 2026 fall internships, 2027 roles, and 
 - Filters for 2026 Fall, 2027, New Grad, and remote mode.
 - Goal setting and pipeline progress tracking.
 - BCNF-normalized MySQL persistence for profiles, jobs, OA attempts, tasks, contacts, documents, goals, and notifications.
+- OpenAPI 3.1 specification and interactive Swagger UI at `/api/docs`.
 - Private S3-compatible document upload with in-app preview for PDF, image, text, CSV, Markdown, and JSON files.
 - Mobile-responsive layout.
 - Wasmer deployment config using the Flask backend in `app.py`.

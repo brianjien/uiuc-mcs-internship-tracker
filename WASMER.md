@@ -111,3 +111,11 @@ After deploy, verify:
 curl https://internship-tracker.wasmer.app/api/health
 curl 'https://internship-tracker.wasmer.app/api/jobs?refresh=true&limit=10'
 ```
+
+Interactive API documentation is available at:
+
+```bash
+https://internship-tracker.wasmer.app/api/docs
+```
+
+The machine-readable OpenAPI 3.1 document is served from `/api/openapi.json`.
