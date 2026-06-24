@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
+from threading import Lock
 from urllib.parse import parse_qs, quote, urlparse
 
 import pymysql
@@ -37,6 +38,8 @@ MAX_FIELD_LENGTH = 512
 MAX_NOTE_LENGTH = 8_000
 MAX_DATA_URL_BYTES = 720_000
 MAX_UPLOAD_BYTES = 10_000_000
+DATABASE_SCHEMA_VERSION = 2
+DATABASE_NORMAL_FORM = "BCNF"
 GOOGLE_CLIENT_ID = os.environ.get(
     "GOOGLE_CLIENT_ID",
     os.environ.get("VITE_GOOGLE_CLIENT_ID", "48292852686-95nqueviim5bflqo4upq3bta29bkamej.apps.googleusercontent.com"),
@@ -95,6 +98,7 @@ EMPTY_WORKSPACE = {
 
 app = Flask(__name__, static_folder=None)
 schema_ready = False
+schema_lock = Lock()
 job_cache = {"created_at": 0, "payload": None}
 rate_limit_buckets = {}
 
@@ -275,17 +279,46 @@ def ensure_schema():
     global schema_ready
     if schema_ready:
         return
+    with schema_lock:
+        if schema_ready:
+            return
+        _ensure_schema()
+        schema_ready = True
+
+
+def _ensure_schema():
     with db() as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                  version INT UNSIGNED PRIMARY KEY,
+                  name VARCHAR(120) NOT NULL,
+                  applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
                   id VARCHAR(36) PRIMARY KEY,
                   email VARCHAR(255) NOT NULL UNIQUE,
                   password_hash VARCHAR(255) NOT NULL,
-                  profile_json LONGTEXT NOT NULL,
                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS candidate_profiles (
+                  user_id VARCHAR(36) PRIMARY KEY,
+                  name VARCHAR(80) NOT NULL,
+                  program VARCHAR(80) NOT NULL,
+                  graduation VARCHAR(80) NOT NULL,
+                  visa VARCHAR(80) NOT NULL,
+                  avatar VARCHAR(2048) NOT NULL,
+                  CONSTRAINT fk_candidate_profiles_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
@@ -295,7 +328,7 @@ def ensure_schema():
                   token_hash CHAR(64) PRIMARY KEY,
                   user_id VARCHAR(36) NOT NULL,
                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                  expires_at TIMESTAMP NOT NULL,
+                  expires_at DATETIME NOT NULL,
                   CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                   INDEX sessions_user_id_idx (user_id),
                   INDEX sessions_expires_at_idx (expires_at)
@@ -304,24 +337,213 @@ def ensure_schema():
             )
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS workspace_data (
+                CREATE TABLE IF NOT EXISTS workspace_meta (
                   user_id VARCHAR(36) PRIMARY KEY,
-                  jobs_json LONGTEXT NOT NULL,
-                  tasks_json LONGTEXT NOT NULL,
-                  contacts_json LONGTEXT NOT NULL,
-                  documents_json LONGTEXT NOT NULL,
-                  goal_json LONGTEXT NOT NULL,
-                  notifications_json LONGTEXT NOT NULL,
                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                  CONSTRAINT fk_workspace_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                  CONSTRAINT fk_workspace_meta_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
-            cur.execute("SHOW COLUMNS FROM workspace_data LIKE 'notifications_json'")
-            if not cur.fetchone():
-                cur.execute("ALTER TABLE workspace_data ADD COLUMN notifications_json LONGTEXT NULL AFTER goal_json")
-    schema_ready = True
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS jobs (
+                  user_id VARCHAR(36) NOT NULL,
+                  id VARCHAR(128) NOT NULL,
+                  company VARCHAR(120) NOT NULL,
+                  role VARCHAR(160) NOT NULL,
+                  season VARCHAR(60) NOT NULL,
+                  deadline DATE NULL,
+                  location VARCHAR(160) NOT NULL,
+                  mode VARCHAR(40) NOT NULL,
+                  sponsorship VARCHAR(80) NOT NULL,
+                  stage VARCHAR(24) NOT NULL,
+                  match_score SMALLINT UNSIGNED NOT NULL,
+                  source VARCHAR(100) NOT NULL,
+                  source_url VARCHAR(2048) NOT NULL,
+                  posted VARCHAR(80) NOT NULL,
+                  status_date VARCHAR(80) NOT NULL,
+                  priority BOOLEAN NOT NULL DEFAULT FALSE,
+                  contact_name VARCHAR(120) NOT NULL,
+                  contact_role VARCHAR(120) NOT NULL,
+                  contact_email VARCHAR(254) NOT NULL,
+                  summary VARCHAR(700) NOT NULL,
+                  description TEXT NOT NULL,
+                  requirements_text VARCHAR(1200) NOT NULL,
+                  notes TEXT NOT NULL,
+                  next_step VARCHAR(400) NOT NULL,
+                  position INT UNSIGNED NOT NULL,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (user_id, id),
+                  CONSTRAINT fk_jobs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                  INDEX jobs_stage_idx (user_id, stage),
+                  INDEX jobs_company_idx (user_id, company)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_tags (
+                  user_id VARCHAR(36) NOT NULL,
+                  job_id VARCHAR(128) NOT NULL,
+                  tag VARCHAR(48) NOT NULL,
+                  position SMALLINT UNSIGNED NOT NULL,
+                  PRIMARY KEY (user_id, job_id, tag),
+                  CONSTRAINT fk_job_tags_job FOREIGN KEY (user_id, job_id) REFERENCES jobs(user_id, id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_oa_attempts (
+                  user_id VARCHAR(36) NOT NULL,
+                  job_id VARCHAR(128) NOT NULL,
+                  id VARCHAR(128) NOT NULL,
+                  completed_at VARCHAR(32) NOT NULL,
+                  duration_minutes SMALLINT UNSIGNED NOT NULL,
+                  result VARCHAR(24) NOT NULL,
+                  reflection TEXT NOT NULL,
+                  PRIMARY KEY (user_id, job_id, id),
+                  CONSTRAINT fk_oa_attempts_job FOREIGN KEY (user_id, job_id) REFERENCES jobs(user_id, id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_oa_question_types (
+                  user_id VARCHAR(36) NOT NULL,
+                  job_id VARCHAR(128) NOT NULL,
+                  attempt_id VARCHAR(128) NOT NULL,
+                  question_type VARCHAR(40) NOT NULL,
+                  PRIMARY KEY (user_id, job_id, attempt_id, question_type),
+                  CONSTRAINT fk_oa_question_attempt FOREIGN KEY (user_id, job_id, attempt_id)
+                    REFERENCES job_oa_attempts(user_id, job_id, id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_activities (
+                  user_id VARCHAR(36) NOT NULL,
+                  job_id VARCHAR(128) NOT NULL,
+                  id VARCHAR(128) NOT NULL,
+                  activity_type VARCHAR(20) NOT NULL,
+                  occurred_at VARCHAR(32) NOT NULL,
+                  PRIMARY KEY (user_id, job_id, id),
+                  CONSTRAINT fk_job_activities_job FOREIGN KEY (user_id, job_id) REFERENCES jobs(user_id, id) ON DELETE CASCADE,
+                  INDEX job_activities_time_idx (user_id, occurred_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tasks (
+                  user_id VARCHAR(36) NOT NULL,
+                  id VARCHAR(128) NOT NULL,
+                  title VARCHAR(180) NOT NULL,
+                  subtitle VARCHAR(220) NOT NULL,
+                  done BOOLEAN NOT NULL DEFAULT FALSE,
+                  due_date DATE NULL,
+                  priority VARCHAR(24) NOT NULL,
+                  source_job_id VARCHAR(128) NULL,
+                  task_type VARCHAR(40) NOT NULL,
+                  position INT UNSIGNED NOT NULL,
+                  PRIMARY KEY (user_id, id),
+                  CONSTRAINT fk_tasks_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS contacts (
+                  user_id VARCHAR(36) NOT NULL,
+                  id VARCHAR(128) NOT NULL,
+                  name VARCHAR(120) NOT NULL,
+                  company VARCHAR(120) NOT NULL,
+                  role VARCHAR(120) NOT NULL,
+                  email VARCHAR(254) NOT NULL,
+                  next_action VARCHAR(300) NOT NULL,
+                  source VARCHAR(60) NOT NULL,
+                  source_job_id VARCHAR(128) NULL,
+                  position INT UNSIGNED NOT NULL,
+                  PRIMARY KEY (user_id, id),
+                  CONSTRAINT fk_contacts_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS documents (
+                  user_id VARCHAR(36) NOT NULL,
+                  id VARCHAR(128) NOT NULL,
+                  name VARCHAR(160) NOT NULL,
+                  document_type VARCHAR(40) NOT NULL,
+                  status VARCHAR(40) NOT NULL,
+                  target VARCHAR(140) NOT NULL,
+                  source_job_id VARCHAR(128) NULL,
+                  external_url VARCHAR(2048) NOT NULL,
+                  version VARCHAR(40) NOT NULL,
+                  owner VARCHAR(120) NOT NULL,
+                  notes VARCHAR(1500) NOT NULL,
+                  file_name VARCHAR(180) NOT NULL,
+                  file_type VARCHAR(100) NOT NULL,
+                  file_size INT UNSIGNED NOT NULL,
+                  file_data LONGTEXT NOT NULL,
+                  file_key VARCHAR(512) NOT NULL,
+                  file_url VARCHAR(2048) NOT NULL,
+                  storage VARCHAR(20) NOT NULL,
+                  updated_label VARCHAR(80) NOT NULL,
+                  position INT UNSIGNED NOT NULL,
+                  PRIMARY KEY (user_id, id),
+                  CONSTRAINT fk_documents_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS goals (
+                  user_id VARCHAR(36) PRIMARY KEY,
+                  target INT UNSIGNED NOT NULL,
+                  deadline DATE NULL,
+                  label VARCHAR(80) NOT NULL,
+                  CONSTRAINT fk_goals_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notification_settings (
+                  user_id VARCHAR(36) PRIMARY KEY,
+                  browser_alerts BOOLEAN NOT NULL DEFAULT FALSE,
+                  CONSTRAINT fk_notification_settings_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            for table, constraint in (
+                ("notification_reads", "fk_notification_reads_user"),
+                ("notification_dismissals", "fk_notification_dismissals_user"),
+            ):
+                cur.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {table} (
+                      user_id VARCHAR(36) NOT NULL,
+                      notification_id VARCHAR(180) NOT NULL,
+                      PRIMARY KEY (user_id, notification_id),
+                      CONSTRAINT {constraint} FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """
+                )
+            migrate_legacy_profiles(cur)
+            migrate_legacy_workspaces(cur)
+            cur.execute(
+                """
+                INSERT INTO schema_migrations (version, name)
+                VALUES (%s, %s)
+                ON DUPLICATE KEY UPDATE name = VALUES(name)
+                """,
+                (DATABASE_SCHEMA_VERSION, "workspace-bcnf"),
+            )
 
 
 def parse_json(value, fallback):
@@ -675,11 +897,41 @@ def normalize_workspace(value=None):
     }
 
 
+def profile_from_row(row=None):
+    row = row if isinstance(row, dict) else {}
+    if row.get("profile_name") or row.get("profile_avatar"):
+        return clean_profile(
+            {
+                "name": row.get("profile_name"),
+                "program": row.get("profile_program"),
+                "graduation": row.get("profile_graduation"),
+                "visa": row.get("profile_visa"),
+                "avatar": row.get("profile_avatar"),
+            }
+        )
+    return clean_profile(parse_json(row.get("profile_json"), {}))
+
+
+def user_select_sql(where_clause=""):
+    return f"""
+        SELECT
+          users.*,
+          candidate_profiles.name AS profile_name,
+          candidate_profiles.program AS profile_program,
+          candidate_profiles.graduation AS profile_graduation,
+          candidate_profiles.visa AS profile_visa,
+          candidate_profiles.avatar AS profile_avatar
+        FROM users
+        LEFT JOIN candidate_profiles ON candidate_profiles.user_id = users.id
+        {where_clause}
+    """
+
+
 def public_user(row):
     return {
         "id": row["id"],
         "email": row["email"],
-        "profile": clean_profile(parse_json(row.get("profile_json"), {})),
+        "profile": profile_from_row(row),
         "createdAt": str(row.get("created_at")),
         "updatedAt": str(row.get("updated_at")),
     }
@@ -719,55 +971,463 @@ def create_session(user_id):
     return token
 
 
-def get_workspace(user_id):
-    ensure_schema()
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM workspace_data WHERE user_id = %s LIMIT 1", (user_id,))
-            row = cur.fetchone()
-    if not row:
-        save_workspace(user_id, EMPTY_WORKSPACE)
-        return EMPTY_WORKSPACE
+def migrate_legacy_profiles(cur):
+    cur.execute("SHOW COLUMNS FROM users LIKE 'profile_json'")
+    if not cur.fetchone():
+        return
+    cur.execute(
+        """
+        SELECT users.id, users.profile_json
+        FROM users
+        LEFT JOIN candidate_profiles ON candidate_profiles.user_id = users.id
+        WHERE candidate_profiles.user_id IS NULL
+        """
+    )
+    for row in cur.fetchall():
+        profile = clean_profile(parse_json(row.get("profile_json"), {}))
+        cur.execute(
+            """
+            INSERT INTO candidate_profiles (user_id, name, program, graduation, visa, avatar)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              name = VALUES(name),
+              program = VALUES(program),
+              graduation = VALUES(graduation),
+              visa = VALUES(visa),
+              avatar = VALUES(avatar)
+            """,
+            (
+                row["id"],
+                profile["name"],
+                profile["program"],
+                profile["graduation"],
+                profile["visa"],
+                profile["avatar"],
+            ),
+        )
+    cur.execute("ALTER TABLE users DROP COLUMN profile_json")
+
+
+def sql_date(value):
+    return value or None
+
+
+def _replace_workspace_rows(cur, user_id, workspace):
+    next_workspace = normalize_workspace(workspace)
+    for table in (
+        "notification_reads",
+        "notification_dismissals",
+        "notification_settings",
+        "goals",
+        "tasks",
+        "contacts",
+        "documents",
+        "jobs",
+    ):
+        cur.execute(f"DELETE FROM {table} WHERE user_id = %s", (user_id,))
+
+    for position, job in enumerate(next_workspace["jobs"]):
+        cur.execute(
+            """
+            INSERT INTO jobs (
+              user_id, id, company, role, season, deadline, location, mode, sponsorship, stage,
+              match_score, source, source_url, posted, status_date, priority, contact_name,
+              contact_role, contact_email, summary, description, requirements_text, notes,
+              next_step, position
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s,
+              %s, %s
+            )
+            """,
+            (
+                user_id,
+                job["id"],
+                job["company"],
+                job["role"],
+                job["season"],
+                sql_date(job["deadline"]),
+                job["location"],
+                job["mode"],
+                job["sponsorship"],
+                job["stage"],
+                job["match"],
+                job["source"],
+                job["sourceUrl"],
+                job["posted"],
+                job["statusDate"],
+                job["priority"],
+                job["contact"],
+                job["contactRole"],
+                job["contactEmail"],
+                job["summary"],
+                job["description"],
+                job["requirements"],
+                job["notes"],
+                job["nextStep"],
+                position,
+            ),
+        )
+        for tag_position, tag in enumerate(job["tags"]):
+            cur.execute(
+                "INSERT INTO job_tags (user_id, job_id, tag, position) VALUES (%s, %s, %s, %s)",
+                (user_id, job["id"], tag, tag_position),
+            )
+        for attempt in job["oaAttempts"]:
+            cur.execute(
+                """
+                INSERT INTO job_oa_attempts (
+                  user_id, job_id, id, completed_at, duration_minutes, result, reflection
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    job["id"],
+                    attempt["id"],
+                    attempt["completedAt"],
+                    attempt["durationMinutes"],
+                    attempt["result"],
+                    attempt["reflection"],
+                ),
+            )
+            for question_type in attempt["questionTypes"]:
+                cur.execute(
+                    """
+                    INSERT INTO job_oa_question_types (user_id, job_id, attempt_id, question_type)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (user_id, job["id"], attempt["id"], question_type),
+                )
+        for activity in job["activity"]:
+            cur.execute(
+                """
+                INSERT INTO job_activities (user_id, job_id, id, activity_type, occurred_at)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (user_id, job["id"], activity["id"], activity["type"], activity["at"]),
+            )
+
+    valid_job_ids = {job["id"] for job in next_workspace["jobs"]}
+    for position, task in enumerate(next_workspace["tasks"]):
+        source_job_id = task["sourceJobId"] if task["sourceJobId"] in valid_job_ids else None
+        cur.execute(
+            """
+            INSERT INTO tasks (
+              user_id, id, title, subtitle, done, due_date, priority, source_job_id, task_type, position
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                user_id,
+                task["id"],
+                task["title"],
+                task["subtitle"],
+                task["done"],
+                sql_date(task["due"]),
+                task["priority"],
+                source_job_id,
+                task["taskType"],
+                position,
+            ),
+        )
+    for position, contact in enumerate(next_workspace["contacts"]):
+        source_job_id = contact["sourceJobId"] if contact["sourceJobId"] in valid_job_ids else None
+        cur.execute(
+            """
+            INSERT INTO contacts (
+              user_id, id, name, company, role, email, next_action, source, source_job_id, position
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                user_id,
+                contact["id"],
+                contact["name"],
+                contact["company"],
+                contact["role"],
+                contact["email"],
+                contact["next"],
+                contact["source"],
+                source_job_id,
+                position,
+            ),
+        )
+    for position, document in enumerate(next_workspace["documents"]):
+        source_job_id = document["sourceJobId"] if document["sourceJobId"] in valid_job_ids else None
+        cur.execute(
+            """
+            INSERT INTO documents (
+              user_id, id, name, document_type, status, target, source_job_id, external_url,
+              version, owner, notes, file_name, file_type, file_size, file_data, file_key,
+              file_url, storage, updated_label, position
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s
+            )
+            """,
+            (
+                user_id,
+                document["id"],
+                document["name"],
+                document["type"],
+                document["status"],
+                document["target"],
+                source_job_id,
+                document["url"],
+                document["version"],
+                document["owner"],
+                document["notes"],
+                document["fileName"],
+                document["fileType"],
+                document["fileSize"],
+                document["fileData"],
+                document["fileKey"],
+                document["fileUrl"],
+                document["storage"],
+                document["updated"],
+                position,
+            ),
+        )
+    if next_workspace["goal"]:
+        goal = next_workspace["goal"]
+        cur.execute(
+            "INSERT INTO goals (user_id, target, deadline, label) VALUES (%s, %s, %s, %s)",
+            (user_id, goal["target"], sql_date(goal["deadline"]), goal["label"]),
+        )
+    notification_state = next_workspace["notificationState"]
+    cur.execute(
+        "INSERT INTO notification_settings (user_id, browser_alerts) VALUES (%s, %s)",
+        (user_id, notification_state["browserAlerts"]),
+    )
+    for notification_id in notification_state["readIds"]:
+        cur.execute(
+            "INSERT INTO notification_reads (user_id, notification_id) VALUES (%s, %s)",
+            (user_id, notification_id),
+        )
+    for notification_id in notification_state["dismissedIds"]:
+        cur.execute(
+            "INSERT INTO notification_dismissals (user_id, notification_id) VALUES (%s, %s)",
+            (user_id, notification_id),
+        )
+    cur.execute(
+        """
+        INSERT INTO workspace_meta (user_id)
+        VALUES (%s)
+        ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP
+        """,
+        (user_id,),
+    )
+    return next_workspace
+
+
+def migrate_legacy_workspaces(cur):
+    cur.execute("SHOW TABLES LIKE 'workspace_data'")
+    if not cur.fetchone():
+        return
+    cur.execute(
+        """
+        SELECT workspace_data.*
+        FROM workspace_data
+        LEFT JOIN workspace_meta ON workspace_meta.user_id = workspace_data.user_id
+        WHERE workspace_meta.user_id IS NULL
+        """
+    )
+    for row in cur.fetchall():
+        _replace_workspace_rows(
+            cur,
+            row["user_id"],
+            {
+                "jobs": parse_json(row.get("jobs_json"), []),
+                "tasks": parse_json(row.get("tasks_json"), []),
+                "contacts": parse_json(row.get("contacts_json"), []),
+                "documents": parse_json(row.get("documents_json"), []),
+                "goal": parse_json(row.get("goal_json"), None),
+                "notificationState": parse_json(row.get("notifications_json"), {}),
+            },
+        )
+
+
+def date_text(value):
+    if value is None:
+        return ""
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _read_workspace_rows(cur, user_id):
+    cur.execute("SELECT * FROM jobs WHERE user_id = %s ORDER BY position", (user_id,))
+    jobs = {}
+    for row in cur.fetchall():
+        jobs[row["id"]] = {
+            "id": row["id"],
+            "company": row["company"],
+            "role": row["role"],
+            "season": row["season"],
+            "deadline": date_text(row.get("deadline")),
+            "location": row["location"],
+            "mode": row["mode"],
+            "sponsorship": row["sponsorship"],
+            "stage": row["stage"],
+            "match": row["match_score"],
+            "source": row["source"],
+            "sourceUrl": row["source_url"],
+            "posted": row["posted"],
+            "statusDate": row["status_date"],
+            "priority": bool(row["priority"]),
+            "contact": row["contact_name"],
+            "contactRole": row["contact_role"],
+            "contactEmail": row["contact_email"],
+            "summary": row["summary"],
+            "description": row["description"],
+            "requirements": row["requirements_text"],
+            "notes": row["notes"],
+            "tags": [],
+            "nextStep": row["next_step"],
+            "oaAttempts": [],
+            "activity": [],
+        }
+
+    if jobs:
+        cur.execute("SELECT * FROM job_tags WHERE user_id = %s ORDER BY job_id, position", (user_id,))
+        for row in cur.fetchall():
+            if row["job_id"] in jobs:
+                jobs[row["job_id"]]["tags"].append(row["tag"])
+        cur.execute("SELECT * FROM job_oa_attempts WHERE user_id = %s", (user_id,))
+        attempts = {}
+        for row in cur.fetchall():
+            attempt = {
+                "id": row["id"],
+                "completedAt": row["completed_at"],
+                "durationMinutes": row["duration_minutes"],
+                "questionTypes": [],
+                "result": row["result"],
+                "reflection": row["reflection"],
+            }
+            attempts[(row["job_id"], row["id"])] = attempt
+            if row["job_id"] in jobs:
+                jobs[row["job_id"]]["oaAttempts"].append(attempt)
+        cur.execute("SELECT * FROM job_oa_question_types WHERE user_id = %s", (user_id,))
+        for row in cur.fetchall():
+            attempt = attempts.get((row["job_id"], row["attempt_id"]))
+            if attempt:
+                attempt["questionTypes"].append(row["question_type"])
+        cur.execute("SELECT * FROM job_activities WHERE user_id = %s ORDER BY occurred_at", (user_id,))
+        for row in cur.fetchall():
+            if row["job_id"] in jobs:
+                jobs[row["job_id"]]["activity"].append(
+                    {"id": row["id"], "type": row["activity_type"], "at": row["occurred_at"]}
+                )
+
+    cur.execute("SELECT * FROM tasks WHERE user_id = %s ORDER BY position", (user_id,))
+    tasks = [
+        {
+            "id": row["id"],
+            "title": row["title"],
+            "subtitle": row["subtitle"],
+            "done": bool(row["done"]),
+            "due": date_text(row.get("due_date")),
+            "priority": row["priority"],
+            "sourceJobId": row.get("source_job_id") or "",
+            "taskType": row["task_type"],
+        }
+        for row in cur.fetchall()
+    ]
+    cur.execute("SELECT * FROM contacts WHERE user_id = %s ORDER BY position", (user_id,))
+    contacts = [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "company": row["company"],
+            "role": row["role"],
+            "email": row["email"],
+            "next": row["next_action"],
+            "source": row["source"],
+            "sourceJobId": row.get("source_job_id") or "",
+        }
+        for row in cur.fetchall()
+    ]
+    cur.execute("SELECT * FROM documents WHERE user_id = %s ORDER BY position", (user_id,))
+    documents = [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "type": row["document_type"],
+            "status": row["status"],
+            "target": row["target"],
+            "sourceJobId": row.get("source_job_id") or "",
+            "url": row["external_url"],
+            "version": row["version"],
+            "owner": row["owner"],
+            "notes": row["notes"],
+            "fileName": row["file_name"],
+            "fileType": row["file_type"],
+            "fileSize": row["file_size"],
+            "fileData": row["file_data"],
+            "fileKey": row["file_key"],
+            "fileUrl": row["file_url"],
+            "storage": row["storage"],
+            "updated": row["updated_label"],
+        }
+        for row in cur.fetchall()
+    ]
+    cur.execute("SELECT * FROM goals WHERE user_id = %s LIMIT 1", (user_id,))
+    goal_row = cur.fetchone()
+    goal = (
+        {
+            "target": goal_row["target"],
+            "deadline": date_text(goal_row.get("deadline")),
+            "label": goal_row["label"],
+        }
+        if goal_row
+        else None
+    )
+    cur.execute("SELECT browser_alerts FROM notification_settings WHERE user_id = %s LIMIT 1", (user_id,))
+    notification_row = cur.fetchone()
+    cur.execute("SELECT notification_id FROM notification_reads WHERE user_id = %s", (user_id,))
+    read_ids = [row["notification_id"] for row in cur.fetchall()]
+    cur.execute("SELECT notification_id FROM notification_dismissals WHERE user_id = %s", (user_id,))
+    dismissed_ids = [row["notification_id"] for row in cur.fetchall()]
     return normalize_workspace(
         {
-            "jobs": parse_json(row.get("jobs_json"), []),
-            "tasks": parse_json(row.get("tasks_json"), []),
-            "contacts": parse_json(row.get("contacts_json"), []),
-            "documents": parse_json(row.get("documents_json"), []),
-            "goal": parse_json(row.get("goal_json"), None),
-            "notificationState": parse_json(row.get("notifications_json"), {}),
+            "jobs": list(jobs.values()),
+            "tasks": tasks,
+            "contacts": contacts,
+            "documents": documents,
+            "goal": goal,
+            "notificationState": {
+                "readIds": read_ids,
+                "dismissedIds": dismissed_ids,
+                "browserAlerts": bool(notification_row and notification_row["browser_alerts"]),
+            },
         }
     )
 
 
-def save_workspace(user_id, workspace):
+def get_workspace(user_id):
     ensure_schema()
-    next_workspace = normalize_workspace(workspace)
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO workspace_data (user_id, jobs_json, tasks_json, contacts_json, documents_json, goal_json, notifications_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                  jobs_json = VALUES(jobs_json),
-                  tasks_json = VALUES(tasks_json),
-                  contacts_json = VALUES(contacts_json),
-                  documents_json = VALUES(documents_json),
-                  goal_json = VALUES(goal_json),
-                  notifications_json = VALUES(notifications_json)
-                """,
-                (
-                    user_id,
-                    json.dumps(next_workspace["jobs"]),
-                    json.dumps(next_workspace["tasks"]),
-                    json.dumps(next_workspace["contacts"]),
-                    json.dumps(next_workspace["documents"]),
-                    json.dumps(next_workspace["goal"]),
-                    json.dumps(next_workspace["notificationState"]),
-                ),
-            )
-    return next_workspace
+            cur.execute("SELECT user_id FROM workspace_meta WHERE user_id = %s LIMIT 1", (user_id,))
+            exists = cur.fetchone()
+            if exists:
+                return _read_workspace_rows(cur, user_id)
+    if not exists:
+        save_workspace(user_id, EMPTY_WORKSPACE)
+        return EMPTY_WORKSPACE
+    return EMPTY_WORKSPACE
+
+
+def save_workspace(user_id, workspace):
+    ensure_schema()
+    with db() as conn:
+        conn.begin()
+        try:
+            with conn.cursor() as cur:
+                next_workspace = _replace_workspace_rows(cur, user_id, workspace)
+            conn.commit()
+            return next_workspace
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def stage_count(jobs, stage):
@@ -800,28 +1460,49 @@ def get_leaderboard(current_user_id, limit=50):
                 SELECT
                   users.id,
                   users.email,
-                  users.profile_json,
                   users.created_at,
-                  workspace_data.jobs_json,
-                  workspace_data.goal_json,
-                  workspace_data.updated_at AS workspace_updated_at
+                  candidate_profiles.name AS profile_name,
+                  candidate_profiles.program AS profile_program,
+                  candidate_profiles.graduation AS profile_graduation,
+                  candidate_profiles.avatar AS profile_avatar,
+                  goals.target AS goal_target,
+                  workspace_meta.updated_at AS workspace_updated_at,
+                  COUNT(jobs.id) AS tracked,
+                  SUM(CASE WHEN jobs.stage = 'saved' THEN 1 ELSE 0 END) AS saved,
+                  SUM(CASE WHEN jobs.stage <> 'saved' THEN 1 ELSE 0 END) AS applied,
+                  SUM(CASE WHEN jobs.stage = 'oa' THEN 1 ELSE 0 END) AS oa,
+                  SUM(CASE WHEN jobs.stage = 'interview' THEN 1 ELSE 0 END) AS interviews,
+                  SUM(CASE WHEN jobs.stage = 'offer' THEN 1 ELSE 0 END) AS offers,
+                  SUM(CASE WHEN jobs.priority = TRUE THEN 1 ELSE 0 END) AS priority_count
                 FROM users
-                LEFT JOIN workspace_data ON workspace_data.user_id = users.id
+                LEFT JOIN candidate_profiles ON candidate_profiles.user_id = users.id
+                LEFT JOIN workspace_meta ON workspace_meta.user_id = users.id
+                LEFT JOIN goals ON goals.user_id = users.id
+                LEFT JOIN jobs ON jobs.user_id = users.id
+                GROUP BY
+                  users.id,
+                  users.email,
+                  users.created_at,
+                  candidate_profiles.name,
+                  candidate_profiles.program,
+                  candidate_profiles.graduation,
+                  candidate_profiles.avatar,
+                  goals.target,
+                  workspace_meta.updated_at
                 """
             )
             rows = cur.fetchall()
 
     ranked = []
     for row in rows:
-        profile = clean_profile(parse_json(row.get("profile_json"), {}))
-        jobs = [sanitize_job(job) for job in parse_json(row.get("jobs_json"), []) if isinstance(job, dict)]
-        goal = sanitize_goal(parse_json(row.get("goal_json"), None))
-        applied = applied_count(jobs)
-        interviews = stage_count(jobs, "interview")
-        offers = stage_count(jobs, "offer")
-        oa = stage_count(jobs, "oa")
-        saved = stage_count(jobs, "saved")
-        goal_target = clean_int((goal or {}).get("target"), 0, 5000, 0)
+        profile = profile_from_row(row)
+        applied = int(row.get("applied") or 0)
+        interviews = int(row.get("interviews") or 0)
+        offers = int(row.get("offers") or 0)
+        oa = int(row.get("oa") or 0)
+        saved = int(row.get("saved") or 0)
+        tracked = int(row.get("tracked") or 0)
+        goal_target = clean_int(row.get("goal_target"), 0, 5000, 0)
         display_name = clean_text(profile.get("name"), 80) or clean_text(str(row.get("email") or "").split("@", 1)[0], 80, "Candidate")
 
         ranked.append(
@@ -832,12 +1513,12 @@ def get_leaderboard(current_user_id, limit=50):
                 "program": profile.get("program") or "Career Profile",
                 "graduation": profile.get("graduation") or "2026-2027 cycle",
                 "applied": applied,
-                "tracked": len(jobs),
+                "tracked": tracked,
                 "saved": saved,
                 "oa": oa,
                 "interviews": interviews,
                 "offers": offers,
-                "priority": len([job for job in jobs if job.get("priority")]),
+                "priority": int(row.get("priority_count") or 0),
                 "conversionRate": conversion_rate(interviews + offers, applied),
                 "offerRate": conversion_rate(offers, applied),
                 "goalTarget": goal_target,
@@ -965,9 +1646,16 @@ def find_user_by_token(token):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT users.*
+                SELECT
+                  users.*,
+                  candidate_profiles.name AS profile_name,
+                  candidate_profiles.program AS profile_program,
+                  candidate_profiles.graduation AS profile_graduation,
+                  candidate_profiles.visa AS profile_visa,
+                  candidate_profiles.avatar AS profile_avatar
                 FROM sessions
                 JOIN users ON users.id = sessions.user_id
+                LEFT JOIN candidate_profiles ON candidate_profiles.user_id = users.id
                 WHERE sessions.token_hash = %s AND sessions.expires_at > CURRENT_TIMESTAMP
                 LIMIT 1
                 """,
@@ -1026,13 +1714,20 @@ def create_user_account(draft):
                 "avatar": draft["profile"].get("avatar") or "/assets/profile-presets/avatar-portrait.png",
             }
             cur.execute(
-                "INSERT INTO users (id, email, password_hash, profile_json) VALUES (%s, %s, %s, %s)",
-                (user_id, draft["email"], hash_password(draft["password"]), json.dumps(profile)),
+                "INSERT INTO users (id, email, password_hash) VALUES (%s, %s, %s)",
+                (user_id, draft["email"], hash_password(draft["password"])),
+            )
+            cur.execute(
+                """
+                INSERT INTO candidate_profiles (user_id, name, program, graduation, visa, avatar)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (user_id, profile["name"], profile["program"], profile["graduation"], profile["visa"], profile["avatar"]),
             )
     save_workspace(user_id, EMPTY_WORKSPACE)
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE id = %s LIMIT 1", (user_id,))
+            cur.execute(user_select_sql("WHERE users.id = %s LIMIT 1"), (user_id,))
             user = public_user(cur.fetchone())
     return {"user": user, "token": create_session(user_id), "workspace": EMPTY_WORKSPACE}
 
@@ -1041,7 +1736,7 @@ def login_user(draft):
     ensure_schema()
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE email = %s LIMIT 1", (draft["email"],))
+            cur.execute(user_select_sql("WHERE users.email = %s LIMIT 1"), (draft["email"],))
             row = cur.fetchone()
     if not row or not verify_password(draft["password"], row.get("password_hash")):
         return {"error": "Email or password is incorrect."}
@@ -1066,7 +1761,7 @@ def login_google_user(profile):
         raise ValueError("Google profile email is invalid.")
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE email = %s LIMIT 1", (normalized_email,))
+            cur.execute(user_select_sql("WHERE users.email = %s LIMIT 1"), (normalized_email,))
             row = cur.fetchone()
             if not row:
                 user_id = str(uuid.uuid4())
@@ -1080,11 +1775,25 @@ def login_google_user(profile):
                     }
                 )
                 cur.execute(
-                    "INSERT INTO users (id, email, password_hash, profile_json) VALUES (%s, %s, %s, %s)",
-                    (user_id, normalized_email, f"google:{secrets.token_hex(24)}", json.dumps(next_profile)),
+                    "INSERT INTO users (id, email, password_hash) VALUES (%s, %s, %s)",
+                    (user_id, normalized_email, f"google:{secrets.token_hex(24)}"),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO candidate_profiles (user_id, name, program, graduation, visa, avatar)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        user_id,
+                        next_profile["name"],
+                        next_profile["program"],
+                        next_profile["graduation"],
+                        next_profile["visa"],
+                        next_profile["avatar"],
+                    ),
                 )
                 save_workspace(user_id, EMPTY_WORKSPACE)
-                cur.execute("SELECT * FROM users WHERE id = %s LIMIT 1", (user_id,))
+                cur.execute(user_select_sql("WHERE users.id = %s LIMIT 1"), (user_id,))
                 row = cur.fetchone()
     return {"user": public_user(row), "token": create_session(row["id"]), "workspace": get_workspace(row["id"])}
 
@@ -1782,15 +2491,39 @@ def add_security_headers(response):
 @app.get("/api/health")
 def health():
     if not has_database_config():
-        return json_response({"ok": True, "service": "career-tracker-dashboard", "database": {"configured": False, "ok": False}})
+        return json_response(
+            {
+                "ok": True,
+                "service": "career-tracker-dashboard",
+                "database": {
+                    "configured": False,
+                    "ok": False,
+                    "schemaVersion": DATABASE_SCHEMA_VERSION,
+                    "normalForm": DATABASE_NORMAL_FORM,
+                },
+            }
+        )
     try:
         ensure_schema()
         with db() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
-        database = {"configured": True, "ok": True}
+                cur.execute("SELECT MAX(version) AS version FROM schema_migrations")
+                schema_row = cur.fetchone() or {}
+        database = {
+            "configured": True,
+            "ok": True,
+            "schemaVersion": int(schema_row.get("version") or DATABASE_SCHEMA_VERSION),
+            "normalForm": DATABASE_NORMAL_FORM,
+        }
     except Exception as exc:
-        database = {"configured": True, "ok": False, "error": str(exc)}
+        database = {
+            "configured": True,
+            "ok": False,
+            "schemaVersion": DATABASE_SCHEMA_VERSION,
+            "normalForm": DATABASE_NORMAL_FORM,
+            "error": str(exc),
+        }
     return json_response({"ok": True, "service": "career-tracker-dashboard", "database": database})
 
 
@@ -1909,8 +2642,27 @@ def profile():
     ensure_schema()
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE users SET profile_json = %s WHERE id = %s", (json.dumps(next_profile), user["id"]))
-            cur.execute("SELECT * FROM users WHERE id = %s LIMIT 1", (user["id"],))
+            cur.execute(
+                """
+                INSERT INTO candidate_profiles (user_id, name, program, graduation, visa, avatar)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                  name = VALUES(name),
+                  program = VALUES(program),
+                  graduation = VALUES(graduation),
+                  visa = VALUES(visa),
+                  avatar = VALUES(avatar)
+                """,
+                (
+                    user["id"],
+                    next_profile["name"],
+                    next_profile["program"],
+                    next_profile["graduation"],
+                    next_profile["visa"],
+                    next_profile["avatar"],
+                ),
+            )
+            cur.execute(user_select_sql("WHERE users.id = %s LIMIT 1"), (user["id"],))
             updated = public_user(cur.fetchone())
     return json_response({"user": updated})
 

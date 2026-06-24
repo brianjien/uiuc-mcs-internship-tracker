@@ -9,6 +9,7 @@ Modern green SaaS dashboard for tracking 2026 fall internships, 2027 roles, and 
 - Live job feed from public sources through `/api/jobs`.
 - Filters for 2026 Fall, 2027, New Grad, and remote mode.
 - Goal setting and pipeline progress tracking.
+- BCNF-normalized MySQL persistence for profiles, jobs, OA attempts, tasks, contacts, documents, goals, and notifications.
 - Private S3-compatible document upload with in-app preview for PDF, image, text, CSV, Markdown, and JSON files.
 - Mobile-responsive layout.
 - Wasmer deployment config using the Flask backend in `app.py`.
@@ -30,7 +31,13 @@ npm run build
 npm start
 ```
 
-Open `http://127.0.0.1:8787`.
+Open `http://127.0.0.1:8080`.
+
+Run the backend mapping tests with:
+
+```bash
+npm test
+```
 
 ## Deploy To Wasmer
 

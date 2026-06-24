@@ -12,10 +12,10 @@ The Wasmer deployment uses the Python/Flask entrypoint in `app.py`. The small `a
 
 - `app.py` serves the built React app from `dist/`.
 - `app.py` handles `/api/*` for auth, Google sign-in, workspace persistence, health checks, and live job fetching.
-- MySQL data is stored in `users`, `sessions`, and `workspace_data`.
+- MySQL data is stored in normalized relational tables. The active schema is version 2 and is designed to BCNF.
 - Live jobs are fetched dynamically from SimplifyJobs, Greenhouse public boards, Remotive, and RemoteOK.
 
-The older Node/EdgeJS path is still present for local development, but the production Wasmer app is using Flask because the EdgeJS package currently fails on the Wasmer N-API runtime.
+The Flask backend is the single active local and production backend. Older Node backend files remain only as migration history and are not used by the npm scripts or Wasmer deployment.
 
 ## Local Full-Stack Test
 
@@ -41,6 +41,8 @@ DB_PASSWORD
 The backend also accepts `DB_USER` as an alias for `DB_USERNAME`.
 
 Keep real database values out of GitHub. For local work, copy `.env.example` to an ignored env file and fill in the values locally.
+
+The schema separates candidate profiles, jobs, tags, OA attempts, OA question types, activities, tasks, contacts, documents, goals, and notification state. On first startup, legacy JSON workspace rows are copied into the relational tables. See `docs/database-normalization.md`.
 
 ## Document Storage
 
