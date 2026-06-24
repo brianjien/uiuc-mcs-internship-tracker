@@ -17,6 +17,7 @@ import { blankGoal, stages } from "../../config/appConfig.jsx";
 import { classNames, CompanyLogo, IconButton } from "../../components/ui.jsx";
 import { daysUntil, formatDate } from "../../lib/dates.js";
 import { safeExternalUrl } from "../../lib/documents.js";
+import { OaTracker } from "./OaTracker.jsx";
 
 export function StageSelect({ value, onChange, label = "Move stage" }) {
   return (
@@ -248,8 +249,16 @@ export function ProgressGoal({ appliedCount, goal = blankGoal, onGoalChange }) {
   );
 }
 
-export function DetailPanel({ job, onClose, onStageChange, onUpdateNotes, onCompleteNextStep }) {
+export function DetailPanel({ job, onClose, onStageChange, onUpdateJob, onUpdateNotes, onCompleteNextStep }) {
   const [tab, setTab] = useState("overview");
+
+  useEffect(() => {
+    setTab(job?.stage === "oa" ? "oa" : "overview");
+  }, [job?.id]);
+
+  useEffect(() => {
+    if (job?.stage === "oa") setTab("oa");
+  }, [job?.stage]);
 
   if (!job) return null;
 
@@ -304,7 +313,7 @@ export function DetailPanel({ job, onClose, onStageChange, onUpdateNotes, onComp
       </div>
 
       <div className="detail-tabs" role="tablist" aria-label="Detail sections">
-        {["overview", "notes", "contacts", "history"].map((item) => (
+        {["overview", "oa", "notes", "contacts", "history"].map((item) => (
           <button
             key={item}
             className={tab === item ? "is-active" : ""}
@@ -313,7 +322,7 @@ export function DetailPanel({ job, onClose, onStageChange, onUpdateNotes, onComp
             aria-selected={tab === item}
             onClick={() => setTab(item)}
           >
-            {item}
+            {item === "oa" ? "OA tracker" : item}
           </button>
         ))}
       </div>
@@ -391,6 +400,8 @@ export function DetailPanel({ job, onClose, onStageChange, onUpdateNotes, onComp
           <p>Synced to your database workspace.</p>
         </div>
       )}
+
+      {tab === "oa" && <OaTracker job={job} onUpdateJob={onUpdateJob} />}
 
       {tab === "contacts" && (
         <div className="contact-panel">

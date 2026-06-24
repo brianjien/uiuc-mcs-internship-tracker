@@ -44,6 +44,7 @@ export function DashboardView({
   onRemoveJob,
   onDrop,
   onDragStart,
+  onUpdateJob,
   onUpdateNotes,
   onCompleteNextStep,
   onToggleTask,
@@ -138,6 +139,7 @@ export function DashboardView({
             job={selectedJob}
             onClose={() => onSelectJob(null)}
             onStageChange={onStageChange}
+            onUpdateJob={onUpdateJob}
             onUpdateNotes={onUpdateNotes}
             onCompleteNextStep={onCompleteNextStep}
           />

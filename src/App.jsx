@@ -872,6 +872,7 @@ export function App() {
               onRemoveJob={removeJob}
               onDrop={handleDrop}
               onDragStart={setDraggingId}
+              onUpdateJob={updateJob}
               onUpdateNotes={(id, notes) => updateJob(id, { notes })}
               onCompleteNextStep={completeNextStep}
               onToggleTask={toggleTask}

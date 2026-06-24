@@ -3,6 +3,30 @@ import { blankGoal, emptyStoredData, STORAGE_KEY } from "../config/appConfig.jsx
 import { normalizeDocument } from "./documents.js";
 import { normalizeNotificationState } from "./notifications.jsx";
 
+const OA_RESULTS = new Set(["Scheduled", "Completed", "Passed", "Rejected"]);
+
+function normalizeOaAttempt(attempt = {}) {
+  const questionTypes = Array.isArray(attempt.questionTypes)
+    ? attempt.questionTypes.filter((type) => typeof type === "string" && type.trim()).slice(0, 8)
+    : [];
+
+  return {
+    id: attempt.id || `oa-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    completedAt: typeof attempt.completedAt === "string" ? attempt.completedAt : "",
+    durationMinutes: Math.max(0, Number(attempt.durationMinutes || 0)),
+    questionTypes,
+    result: OA_RESULTS.has(attempt.result) ? attempt.result : "Completed",
+    reflection: typeof attempt.reflection === "string" ? attempt.reflection : "",
+  };
+}
+
+function normalizeJob(job = {}) {
+  return {
+    ...job,
+    oaAttempts: Array.isArray(job.oaAttempts) ? job.oaAttempts.map(normalizeOaAttempt) : [],
+  };
+}
+
 export function serializeWorkspace({ jobs, tasks, contacts, documents, goal, notificationState }) {
   return {
     jobs,
@@ -16,7 +40,7 @@ export function serializeWorkspace({ jobs, tasks, contacts, documents, goal, not
 
 export function normalizeWorkspace(workspace = emptyStoredData) {
   return {
-    jobs: Array.isArray(workspace.jobs) ? workspace.jobs : [],
+    jobs: Array.isArray(workspace.jobs) ? workspace.jobs.map(normalizeJob) : [],
     tasks: Array.isArray(workspace.tasks) ? workspace.tasks.map((task) => ({ ...task, icon: CheckSquare2 })) : [],
     contacts: Array.isArray(workspace.contacts) ? workspace.contacts : [],
     documents: Array.isArray(workspace.documents) ? workspace.documents.map(normalizeDocument) : [],
@@ -52,7 +76,7 @@ export function readStoredData() {
 }
 
 export function loadJobs() {
-  return readStoredData().jobs;
+  return readStoredData().jobs.map(normalizeJob);
 }
 
 export function loadTasks() {

@@ -48,6 +48,16 @@ ALLOWED_MODES = {"Remote", "Hybrid", "On-site"}
 ALLOWED_PRIORITIES = {"High", "Medium", "Low"}
 ALLOWED_DOCUMENT_TYPES = {"Resume", "Cover Letter", "Portfolio", "Transcript", "Referral Note", "Template", "Other"}
 ALLOWED_DOCUMENT_STATUSES = {"Draft", "Needs Review", "Ready", "Submitted", "Archived"}
+ALLOWED_OA_RESULTS = {"Scheduled", "Completed", "Passed", "Rejected"}
+ALLOWED_OA_QUESTION_TYPES = {
+    "Coding",
+    "Multiple choice",
+    "SQL",
+    "Debugging",
+    "System design",
+    "Behavioral",
+    "Math / logic",
+}
 SAFE_PROFILE_AVATAR_PREFIXES = ("/assets/profile-presets/",)
 SAFE_DATA_MIME_TYPES = {
     "data:application/pdf",
@@ -455,6 +465,40 @@ def clean_profile(profile=None):
     }
 
 
+def clean_datetime(value):
+    text = clean_text(value, 32)
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    return parsed.isoformat(timespec="minutes")
+
+
+def sanitize_oa_attempt(attempt=None):
+    attempt = attempt if isinstance(attempt, dict) else {}
+    result = clean_text(attempt.get("result"), 24, "Completed")
+    if result not in ALLOWED_OA_RESULTS:
+        result = "Completed"
+
+    question_types = []
+    raw_types = attempt.get("questionTypes") if isinstance(attempt.get("questionTypes"), list) else []
+    for raw_type in raw_types[:8]:
+        question_type = clean_text(raw_type, 40)
+        if question_type in ALLOWED_OA_QUESTION_TYPES and question_type not in question_types:
+            question_types.append(question_type)
+
+    return {
+        "id": clean_identifier(attempt.get("id"), f"oa-{uuid.uuid4()}"),
+        "completedAt": clean_datetime(attempt.get("completedAt")),
+        "durationMinutes": clean_int(attempt.get("durationMinutes"), 0, 1440, 0),
+        "questionTypes": question_types,
+        "result": result,
+        "reflection": clean_text(attempt.get("reflection"), 3_000),
+    }
+
+
 def sanitize_job(job=None):
     job = job if isinstance(job, dict) else {}
     company = clean_text(job.get("company"), 120, "Unknown")
@@ -492,6 +536,10 @@ def sanitize_job(job=None):
         "notes": clean_text(job.get("notes"), MAX_NOTE_LENGTH),
         "tags": clean_tags(job.get("tags")),
         "nextStep": clean_text(job.get("nextStep"), 400),
+        "oaAttempts": [
+            sanitize_oa_attempt(item)
+            for item in (job.get("oaAttempts") if isinstance(job.get("oaAttempts"), list) else [])[:50]
+        ],
     }
 
 
