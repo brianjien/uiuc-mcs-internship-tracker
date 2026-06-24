@@ -62,8 +62,15 @@ const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "career-tracker-wasmer-
 try {
   run("npm", ["run", "build"]);
 
-  await fs.copyFile(path.join(projectRoot, "app.py"), path.join(tempRoot, "app.py"));
-  await fs.copyFile(path.join(projectRoot, "a.py"), path.join(tempRoot, "a.py"));
+  const rootEntries = await fs.readdir(projectRoot, { withFileTypes: true });
+  const pythonModules = rootEntries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".py"))
+    .map((entry) => entry.name);
+  await Promise.all(
+    pythonModules.map((filename) =>
+      fs.copyFile(path.join(projectRoot, filename), path.join(tempRoot, filename)),
+    ),
+  );
   await fs.copyFile(path.join(projectRoot, "requirements.txt"), path.join(tempRoot, "requirements.txt"));
   await fs.cp(path.join(projectRoot, "dist"), path.join(tempRoot, "dist"), { recursive: true });
   await fs.writeFile(path.join(tempRoot, "app.yaml"), appYaml(), "utf8");
