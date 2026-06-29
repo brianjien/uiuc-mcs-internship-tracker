@@ -71,6 +71,76 @@ function getApplyButtonText({ hasSource, imported, isChecking, status }) {
   return imported ? "Open" : "Apply";
 }
 
+function escapeHtml(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderApplyWindowMessage(targetWindow, title, message) {
+  if (!targetWindow || targetWindow.closed) return;
+  const safeTitle = escapeHtml(title);
+  const safeMessage = escapeHtml(message);
+  try {
+    targetWindow.document.title = title;
+    targetWindow.document.body.innerHTML = `
+      <main style="min-height:100vh;display:grid;place-items:center;margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f7fbf7;color:#16231c;">
+        <section style="max-width:420px;padding:28px;border:1px solid #d8e6dc;border-radius:14px;background:#fff;box-shadow:0 24px 60px rgba(18,68,42,.12);">
+          <p style="margin:0 0 8px;color:#087f45;font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;">Career Tracker</p>
+          <h1 style="margin:0 0 10px;font-size:24px;line-height:1.15;">${safeTitle}</h1>
+          <p style="margin:0;color:#657268;font-size:15px;line-height:1.5;">${safeMessage}</p>
+        </section>
+      </main>
+    `;
+  } catch {
+    // Some browsers restrict writing to the popup; navigation will still work when the handle is usable.
+  }
+}
+
+function openApplyWindow() {
+  const targetWindow = window.open("about:blank", "_blank");
+  if (!targetWindow) return null;
+  try {
+    targetWindow.opener = null;
+  } catch {
+    // Best effort noopener for browsers that still return a controllable handle.
+  }
+  renderApplyWindowMessage(targetWindow, "Checking apply link", "Verifying that the posting is still open before sending you to the source.");
+  return targetWindow;
+}
+
+function navigateApplyWindow(targetWindow, url) {
+  if (targetWindow && !targetWindow.closed) {
+    try {
+      targetWindow.location.replace(url);
+      return;
+    } catch {
+      try {
+        targetWindow.location.href = url;
+        return;
+      } catch {
+        // Fall through to current-tab navigation if the popup handle is no longer controllable.
+      }
+    }
+  }
+  window.location.href = url;
+}
+
+function closeApplyWindow(targetWindow, message = "This posting appears to be closed or unsafe, so it was not opened.") {
+  if (!targetWindow || targetWindow.closed) return;
+  renderApplyWindowMessage(targetWindow, "Apply link unavailable", message);
+  window.setTimeout(() => {
+    try {
+      targetWindow.close();
+    } catch {
+      // If the browser refuses to close it, the message above keeps the tab from looking broken.
+    }
+  }, 900);
+}
+
 function OpportunityPreviewModal({ job, imported, linkStatus, isCheckingLink, onApply, onClose, onImport }) {
   const requirementItems = getOpportunityRequirementItems(job);
   const signals = getOpportunitySignals(job);
@@ -229,28 +299,20 @@ export function LiveSearchView({
     const cachedStatus = linkStatuses[job.id];
     if (isBlockingLinkStatus(cachedStatus)) return;
 
-    const openedWindow = window.open("", "_blank", "noopener,noreferrer");
+    const openedWindow = openApplyWindow();
     setCheckingLinkIds((current) => ({ ...current, [job.id]: true }));
     try {
       const response = await fetch(`/api/jobs/link-status?url=${encodeURIComponent(sourceUrl)}`);
       const data = response.ok ? await response.json() : { ok: true, status: "unknown", url: sourceUrl };
       setLinkStatuses((current) => ({ ...current, [job.id]: data }));
       if (isBlockingLinkStatus(data)) {
-        if (openedWindow && !openedWindow.closed) openedWindow.close();
+        closeApplyWindow(openedWindow, data.message);
         return;
       }
       const verifiedUrl = safeExternalUrl(data.url) || sourceUrl;
-      if (openedWindow) {
-        openedWindow.location.href = verifiedUrl;
-      } else {
-        window.open(verifiedUrl, "_blank", "noopener,noreferrer");
-      }
+      navigateApplyWindow(openedWindow, verifiedUrl);
     } catch {
-      if (openedWindow) {
-        openedWindow.location.href = sourceUrl;
-      } else {
-        window.open(sourceUrl, "_blank", "noopener,noreferrer");
-      }
+      navigateApplyWindow(openedWindow, sourceUrl);
     } finally {
       setCheckingLinkIds((current) => ({ ...current, [job.id]: false }));
     }
