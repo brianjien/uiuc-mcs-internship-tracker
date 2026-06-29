@@ -136,6 +136,7 @@ JOB_CLOSED_PATTERNS = [
         r"\bapplication window has closed\b",
     ]
 ]
+ASHBY_APP_DATA_RE = re.compile(r"window\.__appData\s*=\s*(\{.*?\});", re.DOTALL)
 
 simplify_sources = [
     {
@@ -695,6 +696,16 @@ def checkable_job_host(hostname=""):
     return any(host == suffix or host.endswith(f".{suffix}") for suffix in CHECKABLE_JOB_HOST_SUFFIXES)
 
 
+def is_ashby_posting_url(url=""):
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = str(parsed.hostname or "").strip(".").lower()
+    path_parts = [part for part in parsed.path.split("/") if part]
+    return (host == "ashbyhq.com" or host.endswith(".ashbyhq.com")) and len(path_parts) >= 2
+
+
 def safe_job_check_url(value=""):
     url = clean_url(value)
     if not url:
@@ -726,9 +737,27 @@ def read_response_sample(response):
         return raw.decode("utf-8", errors="ignore")
 
 
-def closed_posting_reason(status_code, body=""):
+def ashby_closed_posting_reason(url="", body=""):
+    if not is_ashby_posting_url(url):
+        return ""
+    match = ASHBY_APP_DATA_RE.search(body or "")
+    if not match:
+        return ""
+    try:
+        data = json.loads(match.group(1))
+    except (TypeError, json.JSONDecodeError):
+        return ""
+    if "posting" in data and data.get("posting") is None:
+        return "The source says this Ashby posting is no longer available."
+    return ""
+
+
+def closed_posting_reason(status_code, body="", url=""):
     if status_code in {404, 410}:
         return "The source returned a not-found response."
+    ashby_reason = ashby_closed_posting_reason(url, body)
+    if ashby_reason:
+        return ashby_reason
     text = strip_tags(body or "")
     for pattern in JOB_CLOSED_PATTERNS:
         if pattern.search(text):
@@ -781,7 +810,7 @@ def fetch_job_link_status(url):
             content_type = response.headers.get("content-type", "")
             if "text/" in content_type or "html" in content_type or "json" in content_type or not content_type:
                 body = read_response_sample(response)
-            reason = closed_posting_reason(response.status_code, body)
+            reason = closed_posting_reason(response.status_code, body, current_url)
             if reason:
                 return {
                     "ok": False,
