@@ -50,12 +50,34 @@ function getOpportunitySignals(job = {}) {
   return signals.slice(0, 5);
 }
 
-function OpportunityPreviewModal({ job, imported, onClose, onImport }) {
+function isBlockingLinkStatus(status = {}) {
+  return status.status === "unavailable" || status.status === "invalid";
+}
+
+function getLinkStatusText(status = {}, hasSource = false) {
+  if (!hasSource) return "Source link missing";
+  if (status.status === "available") return "Apply link verified";
+  if (status.status === "unavailable") return "Posting closed";
+  if (status.status === "invalid") return "Unsafe apply link";
+  if (status.status === "unknown") return "Could not verify";
+  if (status.status === "unchecked") return "Verify on source";
+  return "Apply link ready";
+}
+
+function getApplyButtonText({ hasSource, imported, isChecking, status }) {
+  if (!hasSource) return "Apply";
+  if (isChecking) return "Checking";
+  if (isBlockingLinkStatus(status)) return "Closed";
+  return imported ? "Open" : "Apply";
+}
+
+function OpportunityPreviewModal({ job, imported, linkStatus, isCheckingLink, onApply, onClose, onImport }) {
   const requirementItems = getOpportunityRequirementItems(job);
   const signals = getOpportunitySignals(job);
   const description = String(job.description || job.summary || "").trim();
   const sourceUrl = safeExternalUrl(job.sourceUrl);
   const hasSource = Boolean(sourceUrl);
+  const linkStatusText = getLinkStatusText(linkStatus, hasSource);
 
   return (
     <div
@@ -75,15 +97,15 @@ function OpportunityPreviewModal({ job, imported, onClose, onImport }) {
             <small>{job.company} · {job.location}</small>
           </span>
           <div className="opportunity-preview-actions">
-            {hasSource ? (
-              <a className="secondary-button" href={sourceUrl} target="_blank" rel="noreferrer">
-                Apply <ArrowUpRight size={14} aria-hidden="true" />
-              </a>
-            ) : (
-              <button className="secondary-button" type="button" disabled>
-                Apply
-              </button>
-            )}
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => onApply(job)}
+              disabled={!hasSource || isCheckingLink || isBlockingLinkStatus(linkStatus)}
+            >
+              {getApplyButtonText({ hasSource, imported, isChecking: isCheckingLink, status: linkStatus })}
+              {hasSource && !isBlockingLinkStatus(linkStatus) && <ArrowUpRight size={14} aria-hidden="true" />}
+            </button>
             <button
               className="primary-button"
               type="button"
@@ -91,7 +113,7 @@ function OpportunityPreviewModal({ job, imported, onClose, onImport }) {
                 onImport(job);
                 onClose();
               }}
-              disabled={imported}
+              disabled={imported || isBlockingLinkStatus(linkStatus)}
             >
               {imported ? "Imported" : "Import"}
             </button>
@@ -112,9 +134,19 @@ function OpportunityPreviewModal({ job, imported, onClose, onImport }) {
             </div>
             <div>
               <span>Status</span>
-              <strong>{imported ? "Imported" : "Not imported"}</strong>
+              <strong>{isBlockingLinkStatus(linkStatus) ? "Closed" : imported ? "Imported" : "Not imported"}</strong>
+            </div>
+            <div>
+              <span>Link</span>
+              <strong>{isCheckingLink ? "Checking" : linkStatusText}</strong>
             </div>
           </section>
+          {isBlockingLinkStatus(linkStatus) && (
+            <section className="opportunity-preview-section opportunity-link-warning">
+              <h3>Posting unavailable</h3>
+              <p>{linkStatus.message || "This posting appears to be closed or removed from the source ATS."}</p>
+            </section>
+          )}
 
           <section className="opportunity-preview-section">
             <h3>Requirements and conditions</h3>
@@ -179,6 +211,8 @@ export function LiveSearchView({
 }) {
   const hasActiveFilters = Boolean(liveQuery.trim()) || liveSeason !== "all" || liveRemote !== "all";
   const [previewJob, setPreviewJob] = useState(null);
+  const [linkStatuses, setLinkStatuses] = useState({});
+  const [checkingLinkIds, setCheckingLinkIds] = useState({});
 
   useEffect(() => {
     if (!previewJob) return undefined;
@@ -188,6 +222,39 @@ export function LiveSearchView({
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [previewJob]);
+
+  async function handleApply(job) {
+    const sourceUrl = safeExternalUrl(job.sourceUrl);
+    if (!sourceUrl) return;
+    const cachedStatus = linkStatuses[job.id];
+    if (isBlockingLinkStatus(cachedStatus)) return;
+
+    const openedWindow = window.open("", "_blank", "noopener,noreferrer");
+    setCheckingLinkIds((current) => ({ ...current, [job.id]: true }));
+    try {
+      const response = await fetch(`/api/jobs/link-status?url=${encodeURIComponent(sourceUrl)}`);
+      const data = response.ok ? await response.json() : { ok: true, status: "unknown", url: sourceUrl };
+      setLinkStatuses((current) => ({ ...current, [job.id]: data }));
+      if (isBlockingLinkStatus(data)) {
+        if (openedWindow && !openedWindow.closed) openedWindow.close();
+        return;
+      }
+      const verifiedUrl = safeExternalUrl(data.url) || sourceUrl;
+      if (openedWindow) {
+        openedWindow.location.href = verifiedUrl;
+      } else {
+        window.open(verifiedUrl, "_blank", "noopener,noreferrer");
+      }
+    } catch {
+      if (openedWindow) {
+        openedWindow.location.href = sourceUrl;
+      } else {
+        window.open(sourceUrl, "_blank", "noopener,noreferrer");
+      }
+    } finally {
+      setCheckingLinkIds((current) => ({ ...current, [job.id]: false }));
+    }
+  }
 
   return (
     <section className="view-shell live-search-view">
@@ -279,8 +346,11 @@ export function LiveSearchView({
           const imported = importedIds.has(job.id);
           const sourceUrl = safeExternalUrl(job.sourceUrl);
           const hasSource = Boolean(sourceUrl);
+          const linkStatus = linkStatuses[job.id] || {};
+          const isCheckingLink = Boolean(checkingLinkIds[job.id]);
+          const linkStatusText = getLinkStatusText(linkStatus, hasSource);
           return (
-            <article key={job.id} className="opportunity-row">
+            <article key={job.id} className={`opportunity-row${isBlockingLinkStatus(linkStatus) ? " opportunity-row-closed" : ""}`}>
               <CompanyLogo company={job.company} />
               <div className="opportunity-main">
                 <div>
@@ -300,8 +370,15 @@ export function LiveSearchView({
                 <div className="opportunity-detail-strip">
                   <span>Posted {job.posted || "Recently"}</span>
                   <span>{job.sponsorship === "Unknown" ? "Sponsorship: verify" : job.sponsorship}</span>
-                  <span>{sourceUrl ? "Apply link ready" : "Source link missing"}</span>
+                  <span className={isBlockingLinkStatus(linkStatus) ? "link-status-closed" : ""}>
+                    {isCheckingLink ? "Checking apply link" : linkStatusText}
+                  </span>
                 </div>
+                {isBlockingLinkStatus(linkStatus) && (
+                  <p className="opportunity-link-warning-text">
+                    {linkStatus.message || "This posting appears closed or removed from the source ATS."}
+                  </p>
+                )}
                 {job.summary && <p className="opportunity-summary">{job.summary}</p>}
               </div>
               <div className="opportunity-score">
@@ -313,16 +390,16 @@ export function LiveSearchView({
                   <Eye size={14} aria-hidden="true" />
                   Preview
                 </button>
-                {hasSource ? (
-                  <a className="secondary-button" href={sourceUrl} target="_blank" rel="noreferrer">
-                    Apply <ArrowUpRight size={14} aria-hidden="true" />
-                  </a>
-                ) : (
-                  <button className="secondary-button" type="button" disabled>
-                    Apply
-                  </button>
-                )}
-                <button className="primary-button" type="button" onClick={() => onImport(job)} disabled={imported}>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => handleApply(job)}
+                  disabled={!hasSource || isCheckingLink || isBlockingLinkStatus(linkStatus)}
+                >
+                  {getApplyButtonText({ hasSource, imported, isChecking: isCheckingLink, status: linkStatus })}
+                  {hasSource && !isBlockingLinkStatus(linkStatus) && <ArrowUpRight size={14} aria-hidden="true" />}
+                </button>
+                <button className="primary-button" type="button" onClick={() => onImport(job)} disabled={imported || isBlockingLinkStatus(linkStatus)}>
                   {imported ? "Imported" : "Import"}
                 </button>
               </div>
@@ -342,6 +419,9 @@ export function LiveSearchView({
         <OpportunityPreviewModal
           job={previewJob}
           imported={importedIds.has(previewJob.id)}
+          linkStatus={linkStatuses[previewJob.id] || {}}
+          isCheckingLink={Boolean(checkingLinkIds[previewJob.id])}
+          onApply={handleApply}
           onClose={() => setPreviewJob(null)}
           onImport={onImport}
         />

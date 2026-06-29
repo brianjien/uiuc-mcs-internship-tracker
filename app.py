@@ -1,10 +1,12 @@
 import hashlib
 import hmac
+import ipaddress
 import json
 import mimetypes
 import os
 import re
 import secrets
+import socket
 import sys
 import time
 import uuid
@@ -13,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 from threading import Lock
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 import pymysql
 import requests
@@ -102,6 +104,7 @@ schema_ready = False
 schema_lock = Lock()
 job_cache = {"created_at": 0, "payload": None}
 rate_limit_buckets = {}
+link_status_cache = {}
 
 EARLY_CAREER_PATTERN = re.compile(
     r"\b(intern|internship|co[- ]?op|university|student|new grad|new college grad|graduate|entry[- ]?level|early career)\b",
@@ -109,6 +112,30 @@ EARLY_CAREER_PATTERN = re.compile(
 )
 TECH_ROLE_PATTERN = re.compile(r"\b(software|engineer|developer|machine learning|ml|ai|data|security|systems|platform|backend|frontend|fullstack)\b", re.I)
 LIVE_INDEX_LIMIT = 3_000
+LINK_STATUS_CACHE_MS = 15 * 60 * 1000
+LINK_STATUS_MAX_BYTES = 96_000
+CHECKABLE_JOB_HOST_SUFFIXES = (
+    "ashbyhq.com",
+    "greenhouse.io",
+    "lever.co",
+    "lever.com",
+    "workdayjobs.com",
+    "myworkdayjobs.com",
+)
+JOB_CLOSED_PATTERNS = [
+    re.compile(pattern, re.I)
+    for pattern in [
+        r"\bjob not found\b",
+        r"\bthe job you requested was not found\b",
+        r"\bposition not found\b",
+        r"\bposting not found\b",
+        r"\bthis job is closed\b",
+        r"\bthis position is closed\b",
+        r"\bno longer accepting applications\b",
+        r"\bno longer available\b",
+        r"\bapplication window has closed\b",
+    ]
+]
 
 simplify_sources = [
     {
@@ -639,6 +666,182 @@ def clean_url(value="", allow_data=False, allow_local=False):
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
         return ""
     return raw
+
+
+def hostname_is_public(hostname=""):
+    host = str(hostname or "").strip().strip(".").lower()
+    if not host or host in {"localhost", "0.0.0.0"} or host.endswith(".local"):
+        return False
+    try:
+        for family, _, _, _, sockaddr in socket.getaddrinfo(host, None):
+            address = sockaddr[0]
+            ip = ipaddress.ip_address(address)
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_reserved
+                or ip.is_unspecified
+            ):
+                return False
+    except Exception:
+        return False
+    return True
+
+
+def checkable_job_host(hostname=""):
+    host = str(hostname or "").strip(".").lower()
+    return any(host == suffix or host.endswith(f".{suffix}") for suffix in CHECKABLE_JOB_HOST_SUFFIXES)
+
+
+def safe_job_check_url(value=""):
+    url = clean_url(value)
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return ""
+    if not parsed.hostname or not hostname_is_public(parsed.hostname):
+        return ""
+    return url
+
+
+def read_response_sample(response):
+    chunks = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=8192, decode_unicode=False):
+        if not chunk:
+            continue
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= LINK_STATUS_MAX_BYTES:
+            break
+    raw = b"".join(chunks)
+    encoding = response.encoding or "utf-8"
+    try:
+        return raw.decode(encoding, errors="ignore")
+    except Exception:
+        return raw.decode("utf-8", errors="ignore")
+
+
+def closed_posting_reason(status_code, body=""):
+    if status_code in {404, 410}:
+        return "The source returned a not-found response."
+    text = strip_tags(body or "")
+    for pattern in JOB_CLOSED_PATTERNS:
+        if pattern.search(text):
+            return "The source says this posting is no longer available."
+    return ""
+
+
+def fetch_job_link_status(url):
+    current_url = safe_job_check_url(url)
+    if not current_url:
+        return {
+            "ok": False,
+            "status": "invalid",
+            "checked": False,
+            "message": "This apply link is invalid or unsafe.",
+            "url": "",
+        }
+    parsed = urlparse(current_url)
+    if not checkable_job_host(parsed.hostname):
+        return {
+            "ok": True,
+            "status": "unchecked",
+            "checked": False,
+            "message": "This source is not checked automatically. Open it and verify before applying.",
+            "url": current_url,
+        }
+
+    headers = {
+        "User-Agent": "Career-Tracker-Dashboard/1.0 (+https://internship-tracker.wasmer.app)",
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+    }
+    try:
+        for _ in range(4):
+            response = requests.get(current_url, headers=headers, timeout=8, allow_redirects=False, stream=True)
+            if response.is_redirect:
+                location = response.headers.get("location") or ""
+                next_url = safe_job_check_url(urljoin(current_url, location))
+                if not next_url:
+                    return {
+                        "ok": False,
+                        "status": "invalid",
+                        "checked": True,
+                        "message": "This apply link redirects to an unsafe or unsupported destination.",
+                        "url": current_url,
+                    }
+                current_url = next_url
+                continue
+
+            body = ""
+            content_type = response.headers.get("content-type", "")
+            if "text/" in content_type or "html" in content_type or "json" in content_type or not content_type:
+                body = read_response_sample(response)
+            reason = closed_posting_reason(response.status_code, body)
+            if reason:
+                return {
+                    "ok": False,
+                    "status": "unavailable",
+                    "checked": True,
+                    "message": reason,
+                    "url": current_url,
+                    "httpStatus": response.status_code,
+                }
+            if 200 <= response.status_code < 400:
+                return {
+                    "ok": True,
+                    "status": "available",
+                    "checked": True,
+                    "message": "The apply link is reachable.",
+                    "url": current_url,
+                    "httpStatus": response.status_code,
+                }
+            return {
+                "ok": True,
+                "status": "unknown",
+                "checked": True,
+                "message": "The source could not be verified, but it did not return a clear closed-posting signal.",
+                "url": current_url,
+                "httpStatus": response.status_code,
+            }
+    except requests.RequestException:
+        return {
+            "ok": True,
+            "status": "unknown",
+            "checked": True,
+            "message": "The source could not be reached for verification. Open it and verify before applying.",
+            "url": current_url,
+        }
+
+    return {
+        "ok": True,
+        "status": "unknown",
+        "checked": True,
+        "message": "The source redirects too many times to verify automatically.",
+        "url": current_url,
+    }
+
+
+def get_job_link_status(url):
+    safe_url = clean_url(url)
+    if not safe_url:
+        return fetch_job_link_status(url)
+    now = datetime.now(timezone.utc).timestamp() * 1000
+    cached = link_status_cache.get(safe_url)
+    if cached and now - cached["created_at"] < LINK_STATUS_CACHE_MS:
+        return cached["payload"]
+    payload = fetch_job_link_status(safe_url)
+    link_status_cache[safe_url] = {"created_at": now, "payload": payload}
+    if len(link_status_cache) > 1_000:
+        stale_before = now - (LINK_STATUS_CACHE_MS * 2)
+        for key, value in list(link_status_cache.items()):
+            if value.get("created_at", 0) < stale_before:
+                link_status_cache.pop(key, None)
+    return payload
 
 
 def clean_file_proxy_url(value=""):
@@ -2389,6 +2592,8 @@ def rate_limit_key():
         return "auth", 30, 60
     if request.path == "/api/jobs":
         return "jobs", 90, 60
+    if request.path == "/api/jobs/link-status":
+        return "job-link-status", 180, 60
     if request.path == "/api/leaderboard":
         return "leaderboard", 120, 60
     if request.path in {"/api/workspace", "/api/profile"}:
@@ -2595,6 +2800,11 @@ def health():
 @app.get("/api/jobs")
 def jobs():
     return json_response(get_live_jobs(dict(request.args)))
+
+
+@app.get("/api/jobs/link-status")
+def job_link_status():
+    return json_response(get_job_link_status(request.args.get("url", "")))
 
 
 @app.post("/api/auth/register")

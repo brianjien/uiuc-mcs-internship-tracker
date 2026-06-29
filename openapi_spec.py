@@ -107,6 +107,26 @@ def build_openapi_spec():
                     },
                 }
             },
+            "/api/jobs/link-status": {
+                "get": {
+                    "tags": ["Jobs"],
+                    "summary": "Check whether an external apply link is still reachable",
+                    "operationId": "checkJobLinkStatus",
+                    "parameters": [
+                        {
+                            "name": "url",
+                            "in": "query",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uri", "maxLength": 2048},
+                            "description": "External ATS posting URL to verify before opening.",
+                        }
+                    ],
+                    "responses": {
+                        "200": response("Apply link status", ref("JobLinkStatus")),
+                        "429": response("Rate limit exceeded", ref("Error")),
+                    },
+                }
+            },
             "/api/auth/register": {
                 "post": {
                     "tags": ["Authentication"],
@@ -533,6 +553,19 @@ def schemas():
                 "sources": {"type": "array", "items": ref("JobSource")},
                 "sourceStatus": {"type": "array", "items": ref("SourceStatus")},
             },
+        },
+        "JobLinkStatus": {
+            "type": "object",
+            "required": ["ok", "status", "checked", "message", "url"],
+            "properties": {
+                "ok": {"type": "boolean"},
+                "status": {"type": "string", "enum": ["available", "unavailable", "unchecked", "unknown", "invalid"]},
+                "checked": {"type": "boolean"},
+                "message": string,
+                "url": {"type": "string"},
+                "httpStatus": {"type": "integer"},
+            },
+            "additionalProperties": True,
         },
         "OAAttempt": {
             "type": "object",
